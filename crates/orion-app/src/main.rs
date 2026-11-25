@@ -1,6 +1,7 @@
 //! Orion desktop app: window, event loop and frame pacing.
 
 mod camera;
+mod feed;
 mod globe;
 mod objects;
 mod renderer;
@@ -14,6 +15,7 @@ use anyhow::Context as _;
 use glam::DVec3;
 use orion_core::sun::{subsolar_point, sun_direction};
 use orion_core::time::JulianDate;
+use orion_data::{Cache, CelesTrak};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -21,6 +23,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use camera::OrbitCamera;
+use feed::Feed;
 use renderer::{Renderer, Scene};
 use tracked::Tracked;
 
@@ -55,6 +58,7 @@ struct Running {
     renderer: Renderer,
     camera: OrbitCamera,
     tracked: Tracked,
+    feed: Feed,
     /// True while the left button is held after being pressed over the scene.
     dragging: bool,
     cursor: Option<PhysicalPosition<f64>>,
@@ -77,11 +81,18 @@ impl Running {
             event_loop.owned_display_handle(),
         ))?;
 
+        let cache = Cache::in_default_location();
+        if cache.is_none() {
+            log::warn!("no cache folder is available; Element Sets will not be fetched");
+        }
+        let (feed, objects) = Feed::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
+
         Ok(Self {
             window,
             renderer,
             camera: OrbitCamera::default(),
-            tracked: Tracked::from_snapshot()?,
+            tracked: Tracked::new(objects),
+            feed,
             dragging: false,
             cursor: None,
             last_frame: Instant::now(),
@@ -98,6 +109,9 @@ impl Running {
 
         // Until the Simulation Clock exists, the scene always shows the present moment.
         let now = julian_date_now();
+        if let Some(objects) = self.feed.poll() {
+            self.tracked.replace(objects);
+        }
         self.tracked.propagate(now);
 
         let size = self.window.inner_size();
@@ -115,9 +129,15 @@ impl Running {
             subsolar: subsolar_point(now),
             tracked: self.tracked.summary(now),
         };
+        let feed_status = self.feed.status(SystemTime::now());
+        let mut refresh_requested = false;
         self.renderer.render(&self.window, &scene, |ctx, gpu| {
             ui::draw(ctx, gpu, &diagnostics);
+            refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
         });
+        if refresh_requested {
+            self.feed.request_refresh(SystemTime::now());
+        }
 
         // Positions change continuously, so draw every frame; vsync paces the loop.
         self.window.request_redraw();

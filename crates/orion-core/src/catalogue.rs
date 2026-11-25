@@ -130,6 +130,31 @@ pub fn parse_element_sets_csv(
     Ok(ParsedElementSets { objects, rejected })
 }
 
+/// Reads several Element Set files, one per kind, into a single list.
+///
+/// An object can appear in more than one file, because the files come from separate
+/// queries. The first occurrence wins, so list the most trusted kind first.
+pub fn parse_element_set_files(
+    files: &[(ObjectKind, &str)],
+) -> Result<ParsedElementSets, CatalogueError> {
+    let mut seen = std::collections::HashSet::new();
+    let mut combined = ParsedElementSets {
+        objects: Vec::new(),
+        rejected: 0,
+    };
+    for &(kind, text) in files {
+        let parsed = parse_element_sets_csv(text, kind)?;
+        combined.rejected += parsed.rejected;
+        combined.objects.extend(
+            parsed
+                .objects
+                .into_iter()
+                .filter(|object| seen.insert(object.catalogue_number)),
+        );
+    }
+    Ok(combined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +232,27 @@ mod tests {
         assert_eq!(parsed.rejected, 1);
         assert_eq!(parsed.objects.len(), 1);
         assert_eq!(parsed.objects[0].name, "SARAMAGO");
+    }
+
+    #[test]
+    fn an_object_in_two_files_keeps_its_first_kind() {
+        let satellites = format!("{HEADER}\n{CALSPHERE}\n");
+        let debris = format!("{HEADER}\n{CALSPHERE}\n{SARAMAGO}\n");
+        let parsed = parse_element_set_files(&[
+            (ObjectKind::Satellite, &satellites),
+            (ObjectKind::Debris, &debris),
+        ])
+        .expect("valid files");
+
+        let kinds: Vec<_> = parsed
+            .objects
+            .iter()
+            .map(|object| (object.catalogue_number, object.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [(900, ObjectKind::Satellite), (100_000, ObjectKind::Debris)]
+        );
     }
 
     #[test]

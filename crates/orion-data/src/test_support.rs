@@ -1,0 +1,120 @@
+//! Shared helpers for this crate's tests.
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::{ElementSetFiles, FetchError, Source};
+
+pub const HEADER: &str = "OBJECT_NAME,OBJECT_ID,EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,ARG_OF_PERICENTER,MEAN_ANOMALY,EPHEMERIS_TYPE,CLASSIFICATION_TYPE,NORAD_CAT_ID,ELEMENT_SET_NO,REV_AT_EPOCH,BSTAR,MEAN_MOTION_DOT,MEAN_MOTION_DDOT";
+
+pub fn hours(count: u64) -> Duration {
+    Duration::from_secs(count * 60 * 60)
+}
+
+/// One real Element Set of each kind, from CelesTrak on 24 November 2026.
+pub fn files() -> ElementSetFiles {
+    let file = |row: &str| format!("{HEADER}\n{row}\n");
+    ElementSetFiles {
+        satellites: file(
+            "CALSPHERE 1,1964-063C,2026-11-24T19:13:23.305152,13.76776729,.00275414,90.2245,75.5043,163.9822,294.5252,0,U,900,999,9352,.4264642E-3,.43E-5,0",
+        ),
+        rocket_bodies: file(
+            "VANGUARD R/B,1959-001B,2026-11-24T13:42:50.850432,11.48745088,.16436474,32.9106,19.8578,234.7966,108.7631,0,U,12,999,54977,.38946772E-3,.697E-5,0",
+        ),
+        debris: file(
+            "ECHO 1 DEB [METAL OBJ],1960-009C,2026-11-24T21:05:33.060768,12.18387137,.01100896,47.2139,272.1129,315.3207,43.8752,0,U,51,999,95076,.51388874E-4,-.79E-6,0",
+        ),
+    }
+}
+
+/// A Source that answers from memory and counts how often it is asked.
+pub struct StubSource {
+    answer: Result<ElementSetFiles, FetchError>,
+    fetches: AtomicUsize,
+}
+
+impl StubSource {
+    pub fn succeeding(files: ElementSetFiles) -> Self {
+        Self {
+            answer: Ok(files),
+            fetches: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn failing(error: FetchError) -> Self {
+        Self {
+            answer: Err(error),
+            fetches: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn fetches(&self) -> usize {
+        self.fetches.load(Ordering::SeqCst)
+    }
+}
+
+impl Source for StubSource {
+    fn name(&self) -> &'static str {
+        "stub"
+    }
+
+    fn fetch(&self) -> Result<ElementSetFiles, FetchError> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        self.answer.clone()
+    }
+}
+
+/// A minimal HTTP server on this machine that answers every request with whatever
+/// `respond` returns for it, and remembers the requests it received.
+pub struct FakeServer {
+    endpoint: String,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeServer {
+    /// `respond` receives the request line and headers and returns a status and body.
+    pub fn start(respond: impl Fn(&str) -> (u16, String) + Send + 'static) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
+        let endpoint = format!("http://{}/gp.php", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+
+        let recorded = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+
+                // Read up to the blank line that ends the headers.
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => request.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+
+                let (status, body) = respond(&request);
+                recorded.lock().unwrap().push(request);
+                let response = format!(
+                    "HTTP/1.1 {status} Status\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        Self { endpoint, requests }
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}

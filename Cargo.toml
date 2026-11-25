@@ -10,10 +10,12 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 orion-core = { path = "crates/orion-core" }
+orion-data = { path = "crates/orion-data" }
 
 anyhow = "1"
 bytemuck = { version = "1.25", features = ["derive"] }
 csv = "1.4"
+directories = "6"
 # egui bundles no fonts by default, so text is invisible without this feature.
 egui = { version = "0.37", features = ["default_fonts"] }
 egui-wgpu = "0.37"
@@ -27,6 +29,8 @@ pollster = "1"
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 sgp4 = "2.4"
+tempfile = "3"
+ureq = "3.5"
 wgpu = "30"
 winit = "0.30.13"
 

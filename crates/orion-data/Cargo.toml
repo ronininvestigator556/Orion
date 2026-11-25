@@ -1,0 +1,17 @@
+[package]
+name = "orion-data"
+description = "Fetching and caching Element Sets for Orion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+orion-core.workspace = true
+
+directories.workspace = true
+log.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 orion-core.workspace = true
+orion-data.workspace = true
 
 anyhow.workspace = true
 bytemuck.workspace = true
@@ -26,3 +27,6 @@ pollster.workspace = true
 rayon.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
