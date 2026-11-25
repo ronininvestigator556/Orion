@@ -15,7 +15,7 @@ A heading under which related Layers are listed: Orbit, Places, Energy, Traffic,
 _Avoid_: Group, category, folder, section
 
 **Feature**:
-One thing shown on a Layer: a fixed place such as a mine, a route such as a pipeline, or something moving such as a ship. A Tracked Object is a Feature of the orbit Layer.
+One thing shown on a Layer: a fixed place such as a mine, a route such as a pipeline, an area such as an oil field, or something moving such as a ship. A Tracked Object is a Feature of the orbit Layer.
 _Avoid_: Entity, item, marker, point of interest
 
 **Base Map**:

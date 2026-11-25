@@ -173,7 +173,7 @@ impl Renderer {
         &mut self,
         window: &Window,
         scene: &Scene<'_>,
-        mut build_ui: impl FnMut(&egui::Context, &GpuInfo),
+        mut build_ui: impl FnMut(&mut egui::Ui, &GpuInfo),
     ) {
         let mut reconfigure_after_present = false;
         let frame = match self.surface.get_current_texture() {
@@ -222,9 +222,7 @@ impl Renderer {
 
         let raw_input = self.egui_state.take_egui_input(window);
         let gpu_info = &self.gpu_info;
-        let output = self
-            .egui_ctx
-            .run_pass(raw_input, |ctx| build_ui(ctx, gpu_info));
+        let output = self.egui_ctx.run_ui(raw_input, |ui| build_ui(ui, gpu_info));
         self.egui_state
             .handle_platform_output(window, output.platform_output);
         let paint_jobs = self

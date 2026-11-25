@@ -12,6 +12,7 @@ mod objects;
 mod orbit_layer;
 mod picking;
 mod renderer;
+mod sidebar;
 mod stars;
 mod tracked;
 mod ui;
@@ -20,9 +21,8 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
-use glam::{DVec3, Vec2};
+use glam::{DVec3, Mat4, Vec2, Vec3};
 use orion_core::clock::SimulationClock;
-use orion_core::filter::Filter;
 use orion_core::sun::{subsolar_point, sun_direction};
 use orion_core::time::JulianDate;
 use orion_data::{Cache, CelesTrak};
@@ -141,8 +141,7 @@ struct Running {
     selected: Option<Selection>,
     /// The Feature under the cursor.
     hovered: Option<FeatureRef>,
-    /// The filter as the Find panel shows it.
-    filter: Filter,
+    sidebar: sidebar::Sidebar,
     /// Line segments for the current frame, kept to reuse the allocation.
     segments: Vec<Segment>,
     /// True while the left button is held after being pressed over the scene.
@@ -176,11 +175,8 @@ impl Running {
         }
         let mut orbit = OrbitLayer::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
         orbit.set_show_ground_track(options.ground_track);
-        let filter = Filter {
-            text: options.find.unwrap_or_default(),
-            ..Filter::default()
-        };
-        orbit.tracked_mut().set_filter(filter.clone());
+        let search = options.find.unwrap_or_default();
+        orbit.set_search(&search);
         let layers = Layers::new(orbit);
 
         let selected = options.select.and_then(|catalogue_number| {
@@ -215,7 +211,7 @@ impl Running {
             clock_panel: ui::ClockPanel::default(),
             selected,
             hovered: None,
-            filter,
+            sidebar: sidebar::Sidebar { search },
             segments: Vec::new(),
             dragging: false,
             pressed_at: None,
@@ -281,15 +277,6 @@ impl Running {
         self.segments.clear();
         self.layers.lines(selected, now, &mut self.segments);
 
-        let scene = Scene {
-            view_projection: pick_view.view_projection,
-            camera_position: pick_view.camera_position,
-            sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
-            objects: self.layers.dots(),
-            lines: &self.segments,
-            sidereal_angle: self.sidereal_angle,
-        };
-
         // Name the selected and hovered Features next to their dots.
         let scale_factor = self.window.scale_factor() as f32;
         let mut labels = Vec::new();
@@ -307,41 +294,23 @@ impl Running {
             };
             if let Some(pixels) = pick_view.project(dot.position()) {
                 let points = pixels / scale_factor;
-                labels.push((egui::pos2(points.x, points.y), name.to_owned()));
+                // A dot behind the sidebar is covered by it, and its name should be too.
+                if points.x > sidebar::WIDTH {
+                    labels.push((egui::pos2(points.x, points.y), name.to_owned()));
+                }
             }
         }
 
-        let tracked = self.layers.orbit.tracked();
         let diagnostics = ui::Diagnostics {
             frame_ms: self.frame_ms,
             subsolar: subsolar_point(now),
-            tracked: tracked.summary(now),
+            tracked: self.layers.orbit.tracked().summary(now),
         };
-        let found = ui::Found {
-            shown: tracked.matches().len(),
-            total: tracked.len(),
-            results: tracked
-                .matches()
-                .iter()
-                .take(ui::MAX_RESULTS)
-                .filter_map(|&index| {
-                    let object = tracked.object(index)?;
-                    Some((
-                        index,
-                        format!("{}  ({})", object.name, object.catalogue_number),
-                    ))
-                })
-                .collect(),
-        };
-        let mut filter = self.filter.clone();
-        let mut found_pick = None;
         let card = selected.and_then(|feature| self.layers.card(feature, now));
         let mut toggles = selected
             .and_then(|feature| self.layers.get(feature.layer))
             .map(|layer| layer.toggles())
             .unwrap_or_default();
-        let feed_status = self.layers.orbit.feed_status(SystemTime::now());
-        let mut refresh_requested = false;
         let mut selection_actions = ui::SelectionActions::default();
         let mut view_choices = ui::ViewChoices {
             frame: self.rig.frame(),
@@ -349,30 +318,52 @@ impl Running {
         };
         let can_follow = selected.is_some();
         let mut clock_action = None;
+        let mut picked = None;
         let clock = self.clock;
+
+        // The dots are lent to the scene for the frame, which leaves the Layers free
+        // for the sidebar to change while it is drawn.
+        let dots = self.layers.take_dots();
+        let scene = Scene {
+            view_projection: pick_view.view_projection,
+            camera_position: pick_view.camera_position,
+            sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
+            objects: &dots,
+            lines: &self.segments,
+            sidereal_angle: self.sidereal_angle,
+        };
+        let layers = &mut self.layers;
+        let sidebar = &mut self.sidebar;
         let clock_panel = &mut self.clock_panel;
-        self.renderer.render(&self.window, &scene, |ctx, gpu| {
-            ui::draw_labels(ctx, &labels);
-            found_pick = ui::draw_find(ctx, &mut filter, &found).or(found_pick);
-            ui::draw_view(ctx, &mut view_choices, can_follow);
-            ui::draw_about(ctx);
-            ui::draw(ctx, gpu, &diagnostics);
-            refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
-            clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
+        self.renderer.render(&self.window, &scene, |ui, gpu| {
+            picked =
+                sidebar::draw(ui, layers, sidebar, now, real_now, SystemTime::now()).or(picked);
+            let ctx = ui.ctx().clone();
+            ui::draw_labels(&ctx, &labels);
+            ui::draw_view(&ctx, &mut view_choices, can_follow);
+            ui::draw_about(&ctx);
+            ui::draw(&ctx, gpu, &diagnostics);
+            clock_action = ui::draw_clock(&ctx, &clock, real_now, clock_panel).or(clock_action);
             if let Some(card) = &card {
-                selection_actions = ui::draw_selected(ctx, card, &mut toggles);
+                selection_actions = ui::draw_selected(&ctx, card, &mut toggles);
             }
         });
+        self.layers.restore_dots(dots);
+
         if let Some(layer) = selected.and_then(|feature| self.layers.get_mut(feature.layer)) {
             layer.set_toggles(&toggles);
         }
-        if filter != self.filter {
-            self.filter = filter.clone();
-            self.layers.orbit.tracked_mut().set_filter(filter);
-            // Indexes still mean the same objects; only what is on show has changed.
+        if let Some(feature) = picked {
+            self.select_and_face(feature);
         }
-        if let Some(index) = found_pick {
-            self.select_and_face(FeatureRef { layer: 0, index });
+        // A Feature on a Layer that has been switched off is no longer on show.
+        let selection_is_on_show = self.selected.is_none_or(|selection| {
+            self.layers
+                .get(selection.feature.layer)
+                .is_some_and(|layer| layer.is_on())
+        });
+        if !selection_is_on_show {
+            self.selected = None;
         }
         match clock_action {
             Some(ui::ClockAction::SetPaused(paused)) => self.clock.set_paused(paused),
@@ -388,9 +379,6 @@ impl Running {
         if selection_actions.clear {
             self.selected = None;
         }
-        if refresh_requested {
-            self.layers.orbit.request_refresh(SystemTime::now());
-        }
 
         // Positions change continuously, so draw every frame; vsync paces the loop.
         self.window.request_redraw();
@@ -405,8 +393,14 @@ impl Running {
     fn pick_view_at(&self, sidereal_angle: f32) -> PickView {
         let size = self.window.inner_size();
         let camera = self.rig.scene_camera(sidereal_angle);
+        // Slide the picture right so the globe sits in the middle of the space beside
+        // the sidebar, not the middle of the window. Clip space is 2 units wide.
+        let width = size.width.max(1) as f32;
+        let shift = sidebar::WIDTH * self.window.scale_factor() as f32 / width;
+        let centre_beside_sidebar = Mat4::from_translation(Vec3::new(shift, 0.0, 0.0));
         PickView {
-            view_projection: camera.view_projection(size.width as f32 / size.height.max(1) as f32),
+            view_projection: centre_beside_sidebar
+                * camera.view_projection(width / size.height.max(1) as f32),
             camera_position: camera.position(),
             viewport: Vec2::new(size.width as f32, size.height as f32),
         }

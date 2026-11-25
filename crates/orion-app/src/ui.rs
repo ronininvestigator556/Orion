@@ -5,12 +5,10 @@ use orion_core::sun::SurfacePoint;
 use std::time::Duration;
 
 use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
-use orion_core::filter::{Filter, Group};
 use orion_core::layer::FeatureCard;
 use orion_core::time::JulianDate;
 
 use crate::camera::ViewFrame;
-use crate::feed::{Origin, Refresh, Status};
 use crate::layer::Toggle;
 use crate::renderer::GpuInfo;
 use crate::tracked::Summary;
@@ -29,7 +27,7 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
         tracked,
     } = *diagnostics;
     egui::Window::new("Diagnostics")
-        .default_pos([770.0, 12.0])
+        .default_pos([crate::sidebar::WIDTH + 12.0, 12.0])
         .default_open(false)
         .resizable(false)
         .show(ctx, |ui| {
@@ -64,7 +62,7 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
 /// Draws the About panel: what Orion is built from and who to thank for it.
 pub fn draw_about(ctx: &egui::Context) {
     egui::Window::new("About")
-        .default_pos([770.0, 50.0])
+        .default_pos([crate::sidebar::WIDTH + 200.0, 12.0])
         .default_open(false)
         .resizable(false)
         .show(ctx, |ui| {
@@ -117,107 +115,6 @@ pub fn draw_view(ctx: &egui::Context, choices: &mut ViewChoices, can_follow: boo
         });
 }
 
-/// The most search results the Find panel lists at once.
-pub const MAX_RESULTS: usize = 100;
-
-/// What the filter currently lets through, for the Find panel.
-pub struct Found {
-    pub shown: usize,
-    pub total: usize,
-    /// The first [`MAX_RESULTS`] matches in name order: each object's index and a
-    /// line of text naming it.
-    pub results: Vec<(usize, String)>,
-}
-
-/// Draws the Find panel, which edits `filter` in place. Returns the index of a search
-/// result the user clicked.
-pub fn draw_find(ctx: &egui::Context, filter: &mut Filter, found: &Found) -> Option<usize> {
-    let mut picked = None;
-    egui::Window::new("Find")
-        .default_pos([12.0, 12.0])
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let field = egui::TextEdit::singleline(&mut filter.text)
-                    .hint_text("Name or catalogue number")
-                    .desired_width(190.0);
-                ui.add(field);
-                if ui
-                    .add_enabled(!filter.text.is_empty(), egui::Button::new("Clear"))
-                    .clicked()
-                {
-                    filter.text.clear();
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut filter.satellites, "Satellites");
-                ui.checkbox(&mut filter.rocket_bodies, "Rocket Bodies");
-                ui.checkbox(&mut filter.debris, "Debris");
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut filter.low, "Low");
-                ui.checkbox(&mut filter.medium, "Medium");
-                ui.checkbox(&mut filter.geostationary, "Geostationary");
-            });
-            ui.checkbox(&mut filter.highly_elliptical, "Highly elliptical");
-
-            egui::ComboBox::from_label("Group")
-                .selected_text(filter.group.map_or("Any", group_name))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut filter.group, None, "Any");
-                    for group in Group::ALL {
-                        ui.selectable_value(&mut filter.group, Some(group), group_name(group));
-                    }
-                });
-
-            ui.separator();
-            let narrowed = *filter != Filter::default();
-            ui.horizontal(|ui| {
-                ui.label(format!("{} of {} shown", found.shown, found.total));
-                if ui
-                    .add_enabled(narrowed, egui::Button::new("Show everything"))
-                    .clicked()
-                {
-                    *filter = Filter::default();
-                }
-            });
-
-            // With nothing narrowed down, a list of every object would be no help.
-            if narrowed {
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        for (index, line) in &found.results {
-                            if ui.selectable_label(false, line).clicked() {
-                                picked = Some(*index);
-                            }
-                        }
-                        if found.shown > found.results.len() {
-                            ui.label(format!("and {} more", found.shown - found.results.len()));
-                        }
-                        if found.shown == 0 {
-                            ui.label("Nothing matches.");
-                        }
-                    });
-            }
-        });
-    picked
-}
-
-fn group_name(group: Group) -> &'static str {
-    match group {
-        Group::Weather => "Weather",
-        Group::SpaceStations => "Space stations",
-        Group::Navigation => "Navigation",
-        Group::Starlink => "Starlink",
-        Group::OneWeb => "OneWeb",
-        Group::Kuiper => "Kuiper",
-        Group::Qianfan => "Qianfan",
-        Group::Guowang => "Guowang",
-    }
-}
-
 /// What the Simulation Clock panel remembers between frames.
 #[derive(Clone, Debug, Default)]
 pub struct ClockPanel {
@@ -249,7 +146,11 @@ pub fn draw_clock(
 ) -> Option<ClockAction> {
     let mut action = None;
     egui::Window::new("Simulation Clock")
-        .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
+        // Clear of the Layers sidebar, which fills the left edge.
+        .anchor(
+            egui::Align2::LEFT_BOTTOM,
+            [crate::sidebar::WIDTH + 12.0, -12.0],
+        )
         .resizable(false)
         .show(ctx, |ui| {
             let moment = clock.moment();
@@ -468,50 +369,8 @@ pub fn draw_labels(ctx: &egui::Context, labels: &[(egui::Pos2, String)]) {
     }
 }
 
-/// Draws the panel about where the Element Sets came from. Returns true if the user
-/// asked for a refresh.
-pub fn draw_element_sets(ctx: &egui::Context, status: &Status) -> bool {
-    let mut refresh_requested = false;
-    egui::Window::new("Element Sets")
-        .default_pos([364.0, 12.0])
-        .resizable(false)
-        .show(ctx, |ui| {
-            let age = format_duration(status.age);
-            ui.label(match status.origin {
-                Origin::Snapshot => format!("Bundled Snapshot, fetched {age} ago"),
-                Origin::Fetched => format!("From {}, fetched {age} ago", status.source),
-            });
-
-            let button = egui::Button::new(format!("Refresh from {}", status.source));
-            match &status.refresh {
-                Refresh::Ready => refresh_requested = ui.add(button).clicked(),
-                Refresh::InProgress => {
-                    ui.add_enabled(false, button);
-                    ui.label("Fetching…");
-                }
-                Refresh::Locked(remaining) => {
-                    ui.add_enabled(false, button);
-                    ui.label(format!(
-                        "Available again in {}",
-                        format_duration(*remaining)
-                    ));
-                }
-                Refresh::Failed(reason) => {
-                    ui.add_enabled(false, button);
-                    ui.label(format!("Refresh failed: {reason}"));
-                    ui.label("No more attempts until Orion is restarted.");
-                }
-                Refresh::Unavailable => {
-                    ui.add_enabled(false, button);
-                    ui.label("No cache folder is available, so nothing is fetched.");
-                }
-            }
-        });
-    refresh_requested
-}
-
 /// Formats a length of time to the nearest sensible unit, such as `45 min`, `3.2 hours` or `5.1 days`.
-fn format_duration(duration: Duration) -> String {
+pub fn format_duration(duration: Duration) -> String {
     let minutes = duration.as_secs_f64() / 60.0;
     if minutes < 60.0 {
         format!("{} min", minutes.round())

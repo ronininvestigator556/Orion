@@ -74,7 +74,7 @@ pub struct Now {
 }
 
 /// The colour of a Tracked Object's dot, as linear colour with alpha from 0 to 255.
-fn kind_color(kind: ObjectKind) -> [u8; 4] {
+pub fn kind_color(kind: ObjectKind) -> [u8; 4] {
     match kind {
         ObjectKind::Satellite => [89, 191, 255, 255],
         ObjectKind::RocketBody => [255, 128, 31, 255],
@@ -141,6 +141,11 @@ impl Tracked {
         };
         tracked.apply_filter();
         tracked
+    }
+
+    /// Which Tracked Objects are on show.
+    pub fn filter(&self) -> &Filter {
+        &self.filter
     }
 
     /// Changes which Tracked Objects are on show.

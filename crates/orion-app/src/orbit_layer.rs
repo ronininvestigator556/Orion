@@ -4,16 +4,17 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use orion_core::catalogue::ObjectKind;
+use orion_core::filter::{Filter, Group};
 use orion_core::layer::{CardRow, FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
 use orion_data::{Cache, Source};
 
-use crate::feed::{Feed, Status};
-use crate::layer::{Highlight, Layer, Toggle};
+use crate::feed::{Feed, Origin};
+use crate::layer::{Highlight, Layer, LayerStatus, Toggle};
 use crate::lines::{self, Segment};
 use crate::objects::Instance;
-use crate::tracked::{Details, Tracked};
-use crate::ui::{format_latitude, format_longitude};
+use crate::tracked::{Details, Tracked, kind_color};
+use crate::ui::{format_duration, format_latitude, format_longitude};
 
 /// Linear colours with alpha.
 const ORBIT_PATH_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
@@ -48,10 +49,6 @@ impl OrbitLayer {
         &self.tracked
     }
 
-    pub fn tracked_mut(&mut self) -> &mut Tracked {
-        &mut self.tracked
-    }
-
     pub fn set_show_ground_track(&mut self, show: bool) {
         self.show_ground_track = show;
     }
@@ -67,14 +64,6 @@ impl OrbitLayer {
             }
             None => false,
         }
-    }
-
-    pub fn feed_status(&self, now: SystemTime) -> Status {
-        self.feed.status(now)
-    }
-
-    pub fn request_refresh(&mut self, now: SystemTime) {
-        self.feed.request_refresh(now);
     }
 
     fn source_name(&self, now: SystemTime) -> &'static str {
@@ -102,6 +91,78 @@ impl Layer for OrbitLayer {
 
     fn set_on(&mut self, on: bool) {
         self.on = on;
+    }
+
+    fn swatch(&self) -> [u8; 4] {
+        kind_color(ObjectKind::Satellite)
+    }
+
+    fn counts(&self) -> (usize, usize) {
+        (self.tracked.matches().len(), self.tracked.len())
+    }
+
+    fn status(&self, now: SystemTime) -> LayerStatus {
+        let status = self.feed.status(now);
+        let age = format_duration(status.age);
+        LayerStatus {
+            text: match status.origin {
+                Origin::Snapshot => format!("Bundled Snapshot, fetched {age} ago"),
+                Origin::Fetched => format!("From {}, fetched {age} ago", status.source),
+            },
+            refresh: Some(status.refresh),
+        }
+    }
+
+    fn request_refresh(&mut self, now: SystemTime) {
+        self.feed.request_refresh(now);
+    }
+
+    fn set_search(&mut self, text: &str) {
+        if self.tracked.filter().text != text {
+            self.tracked.set_filter(Filter {
+                text: text.to_owned(),
+                ..self.tracked.filter().clone()
+            });
+        }
+    }
+
+    fn found(&self, limit: usize) -> Vec<(usize, String)> {
+        self.tracked
+            .matches()
+            .iter()
+            .take(limit)
+            .filter_map(|&index| {
+                let object = self.tracked.object(index)?;
+                Some((
+                    index,
+                    format!("{}  ({})", object.name, object.catalogue_number),
+                ))
+            })
+            .collect()
+    }
+
+    fn filter_ui(&mut self, ui: &mut egui::Ui) {
+        let mut filter = self.tracked.filter().clone();
+        ui.checkbox(&mut filter.satellites, "Satellites");
+        ui.checkbox(&mut filter.rocket_bodies, "Rocket Bodies");
+        ui.checkbox(&mut filter.debris, "Debris");
+        ui.separator();
+        ui.checkbox(&mut filter.low, "Low orbit");
+        ui.checkbox(&mut filter.medium, "Medium orbit");
+        ui.checkbox(&mut filter.geostationary, "Geostationary");
+        ui.checkbox(&mut filter.highly_elliptical, "Highly elliptical");
+        ui.separator();
+        egui::ComboBox::from_label("Group")
+            .selected_text(filter.group.map_or("Any", group_name))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut filter.group, None, "Any");
+                for group in Group::ALL {
+                    ui.selectable_value(&mut filter.group, Some(group), group_name(group));
+                }
+            });
+        if filter != *self.tracked.filter() {
+            self.tracked.set_filter(filter);
+        }
     }
 
     fn update(&mut self, at: JulianDate, highlight: Highlight) {
@@ -158,6 +219,19 @@ impl Layer for OrbitLayer {
         if let Some(toggle) = toggles.first() {
             self.show_ground_track = toggle.on;
         }
+    }
+}
+
+fn group_name(group: Group) -> &'static str {
+    match group {
+        Group::Weather => "Weather",
+        Group::SpaceStations => "Space stations",
+        Group::Navigation => "Navigation",
+        Group::Starlink => "Starlink",
+        Group::OneWeb => "OneWeb",
+        Group::Kuiper => "Kuiper",
+        Group::Qianfan => "Qianfan",
+        Group::Guowang => "Guowang",
     }
 }
 
@@ -314,6 +388,42 @@ pub mod tests {
         assert_eq!(value("Kind"), "Satellite");
         assert_eq!(value("Launched"), "1998-11-20");
         assert_eq!(value("Inclination"), "51.6°");
+    }
+
+    #[test]
+    fn searching_narrows_what_is_shown_and_listed() {
+        let mut layer = snapshot_layer();
+        let (shown, total) = layer.counts();
+        assert_eq!(shown, total);
+
+        layer.set_search("noaa 2");
+        let (shown, _) = layer.counts();
+        assert!(shown > 0 && shown < 100, "{shown} found");
+        let found = layer.found(5);
+        assert!(found.len() <= 5);
+        assert!(
+            found.iter().all(|(_, line)| line.contains("NOAA 2")),
+            "{found:?}"
+        );
+        // The line names the object and gives its catalogue number.
+        assert!(found[0].1.ends_with(')'), "{found:?}");
+
+        layer.set_search("");
+        assert_eq!(layer.counts(), (total, total));
+    }
+
+    #[test]
+    fn status_says_where_the_element_sets_came_from() {
+        let layer = snapshot_layer();
+        let status = layer.status(SystemTime::now());
+        assert!(
+            status.text.starts_with("Bundled Snapshot, fetched"),
+            "{}",
+            status.text
+        );
+        // With no cache folder there is nothing to refresh into.
+        assert_eq!(status.refresh, Some(crate::feed::Refresh::Unavailable));
+        assert_eq!(layer.swatch(), [89, 191, 255, 255]);
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! Layers: what the app shows on the globe, one kind of thing at a time.
 
 use std::ops::Range;
+use std::time::SystemTime;
 
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
 
+use crate::feed::Refresh;
 use crate::lines::Segment;
 use crate::objects::Instance;
 use crate::orbit_layer::OrbitLayer;
@@ -29,17 +31,43 @@ pub struct Toggle {
 }
 
 /// One kind of thing from one kind of Source, shown or hidden as a whole.
+/// Where a Layer's data came from and how fresh it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerStatus {
+    /// A line of text for the sidebar, such as "From CelesTrak, fetched 3.2 hours ago".
+    pub text: String,
+    /// Whether fresh data can be fetched right now; `None` for a Layer with nothing to fetch.
+    pub refresh: Option<Refresh>,
+}
+
 pub trait Layer {
-    // The name, Theme and switch are what the Layers sidebar will show. Until it
-    // exists only the tests read them.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn name(&self) -> &'static str;
-    #[cfg_attr(not(test), allow(dead_code))]
     fn theme(&self) -> Theme;
     fn time_coverage(&self) -> TimeCoverage;
     fn is_on(&self) -> bool;
-    #[cfg_attr(not(test), allow(dead_code))]
     fn set_on(&mut self, on: bool);
+
+    /// The colour that stands for the Layer in the sidebar, as linear colour with
+    /// alpha from 0 to 255.
+    fn swatch(&self) -> [u8; 4];
+
+    /// How many Features pass the Layer's filter and the search, and how many it has in all.
+    fn counts(&self) -> (usize, usize);
+
+    fn status(&self, now: SystemTime) -> LayerStatus;
+
+    /// Starts fetching fresh data, if the Layer has a Source to ask and may ask it now.
+    fn request_refresh(&mut self, _now: SystemTime) {}
+
+    /// Narrows the Layer to Features matching what is typed in the search box. Empty
+    /// text shows everything the Layer's own filter allows.
+    fn set_search(&mut self, text: &str);
+
+    /// The first `limit` Features on show, in name order, each with a line naming it.
+    fn found(&self, limit: usize) -> Vec<(usize, String)>;
+
+    /// Draws the Layer's own filter controls in the sidebar, if it has any.
+    fn filter_ui(&mut self, _ui: &mut egui::Ui) {}
 
     /// Works out where every Feature is at `at` and how each should look. Called once
     /// per frame while the Layer is on and can show that moment.
@@ -177,7 +205,23 @@ impl Layers {
     /// A Feature's dot, if its Layer is on show.
     pub fn dot(&self, feature: FeatureRef) -> Option<&Instance> {
         let range = self.ranges.get(feature.layer)?;
-        self.dots[range.clone()].get(feature.index)
+        self.dots.get(range.clone())?.get(feature.index)
+    }
+
+    /// Lends the gathered dots out, so the scene can draw them while the Layers
+    /// themselves are being changed. Give them back with [`Self::restore_dots`].
+    pub fn take_dots(&mut self) -> Vec<Instance> {
+        std::mem::take(&mut self.dots)
+    }
+
+    pub fn restore_dots(&mut self, dots: Vec<Instance>) {
+        self.dots = dots;
+    }
+
+    /// True if the Layer can show the moment `at`, given the real time now.
+    pub fn covers(&self, layer: usize, at: JulianDate, real_now: JulianDate) -> bool {
+        self.get(layer)
+            .is_some_and(|layer| layer.time_coverage().covers(at, real_now))
     }
 
     /// Gathers the lines every Layer on show draws for the frame.
@@ -219,6 +263,7 @@ mod tests {
         names: Vec<&'static str>,
         coverage: TimeCoverage,
         on: bool,
+        search: String,
         dots: Vec<Instance>,
         last_highlight: Highlight,
     }
@@ -229,6 +274,7 @@ mod tests {
                 names: names.to_vec(),
                 coverage,
                 on: true,
+                search: String::new(),
                 dots: Vec::new(),
                 last_highlight: Highlight::default(),
             })
@@ -250,6 +296,30 @@ mod tests {
         }
         fn set_on(&mut self, on: bool) {
             self.on = on;
+        }
+        fn swatch(&self) -> [u8; 4] {
+            [255; 4]
+        }
+        fn counts(&self) -> (usize, usize) {
+            (self.found(usize::MAX).len(), self.names.len())
+        }
+        fn status(&self, _now: SystemTime) -> LayerStatus {
+            LayerStatus {
+                text: "Built in".to_owned(),
+                refresh: None,
+            }
+        }
+        fn set_search(&mut self, text: &str) {
+            self.search = text.to_lowercase();
+        }
+        fn found(&self, limit: usize) -> Vec<(usize, String)> {
+            self.names
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| name.to_lowercase().contains(&self.search))
+                .take(limit)
+                .map(|(index, name)| (index, name.to_string()))
+                .collect()
         }
         fn update(&mut self, _at: JulianDate, highlight: Highlight) {
             self.last_highlight = highlight;
@@ -369,6 +439,39 @@ mod tests {
             *layers.dot(FeatureRef { layer: 0, index: 1 }).unwrap(),
             orbit_dot
         );
+    }
+
+    #[test]
+    fn dots_can_be_lent_out_and_given_back() {
+        let mut layers = layers();
+        layers.update(moment(), moment(), None, None);
+        let beta = FeatureRef { layer: 1, index: 1 };
+        let before = *layers.dot(beta).unwrap();
+
+        let dots = layers.take_dots();
+        // While they are out, a dot still maps to its Feature, but cannot be read.
+        assert_eq!(
+            layers.feature_at(dots.len() - 1),
+            Some(FeatureRef { layer: 2, index: 0 })
+        );
+        assert_eq!(layers.dot(beta), None);
+
+        layers.restore_dots(dots);
+        assert_eq!(*layers.dot(beta).unwrap(), before);
+    }
+
+    #[test]
+    fn search_and_counts_reach_every_layer() {
+        let mut layers = layers();
+        for index in 0..layers.len() {
+            layers.get_mut(index).unwrap().set_search("ALPHA");
+        }
+        assert_eq!(layers.get(1).unwrap().counts(), (1, 2));
+        assert_eq!(layers.get(1).unwrap().found(10), [(0, "Alpha".to_owned())]);
+        assert_eq!(layers.get(2).unwrap().counts(), (0, 1));
+        assert!(layers.covers(2, moment(), moment()));
+        assert!(!layers.covers(2, JulianDate(moment().0 - 1.0), moment()));
+        assert!(!layers.covers(9, moment(), moment()));
     }
 
     #[test]
