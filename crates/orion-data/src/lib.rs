@@ -5,6 +5,7 @@
 //! and enforces how often a Source may be asked.
 
 mod cache;
+pub mod hazards;
 pub mod import;
 pub mod listing;
 pub mod places;
@@ -14,7 +15,6 @@ mod source;
 mod test_support;
 pub mod tiles;
 pub mod traffic;
-pub mod weather;
 
 use std::fmt;
 use std::io;

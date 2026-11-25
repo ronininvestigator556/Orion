@@ -1,4 +1,4 @@
-//! The listings behind the Weather Layers: earthquakes, fire detections, tropical storms
+//! The listings behind the Hazards Layers: earthquakes, fire detections, tropical storms
 //! and U.S. weather alerts. All four are published for anyone to use, without a key.
 
 use std::collections::HashMap;

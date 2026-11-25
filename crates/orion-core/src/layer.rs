@@ -11,19 +11,30 @@ pub enum Theme {
     Orbit,
     Places,
     Energy,
+    /// What is happening on the roads themselves: incidents and congestion.
+    Roads,
+    /// Vehicles shown moving, such as aircraft and ships.
     Traffic,
+    /// Pictures of the sky and sea.
     Weather,
+    /// Earthquakes, storms and official warnings.
+    Hazards,
+    /// Protests and strikes as reported.
+    Unrest,
     Imported,
 }
 
 impl Theme {
     /// Every Theme, in the order they are listed.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Orbit,
         Self::Places,
         Self::Energy,
+        Self::Roads,
         Self::Traffic,
         Self::Weather,
+        Self::Hazards,
+        Self::Unrest,
         Self::Imported,
     ];
 
@@ -32,8 +43,11 @@ impl Theme {
             Self::Orbit => "Orbit",
             Self::Places => "Places",
             Self::Energy => "Energy",
+            Self::Roads => "Roads",
             Self::Traffic => "Traffic",
             Self::Weather => "Weather",
+            Self::Hazards => "Hazards",
+            Self::Unrest => "Unrest",
             Self::Imported => "Imported",
         }
     }
@@ -111,6 +125,18 @@ mod tests {
     }
 
     #[test]
+    fn themes_are_listed_in_their_order_under_their_names() {
+        let names: Vec<&str> = Theme::ALL.iter().map(|theme| theme.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "Orbit", "Places", "Energy", "Roads", "Traffic", "Weather", "Hazards", "Unrest",
+                "Imported"
+            ]
+        );
+    }
+
+    #[test]
     fn anything_computed_or_fixed_covers_every_moment() {
         for days in [-14.0, -1.0, 0.0, 14.0] {
             assert!(TimeCoverage::AnyMoment.covers(days_from_now(days), real_now()));
@@ -135,16 +161,5 @@ mod tests {
         assert!(archive.covers(days_from_now(-2.9), real_now()));
         assert!(!archive.covers(days_from_now(-3.1), real_now()));
         assert!(!archive.covers(days_from_now(0.5), real_now()));
-    }
-
-    #[test]
-    fn themes_are_listed_in_a_fixed_order_with_names() {
-        let names: Vec<_> = Theme::ALL.iter().map(|theme| theme.name()).collect();
-        assert_eq!(
-            names,
-            [
-                "Orbit", "Places", "Energy", "Traffic", "Weather", "Imported"
-            ]
-        );
     }
 }

@@ -1,12 +1,12 @@
-//! The Layers under the Weather Theme that are lists of places: earthquakes, fire
-//! detections, tropical storms and U.S. weather alerts.
+//! The Layers under the Hazards Theme: earthquakes, fire detections, tropical storms
+//! and U.S. weather alerts.
 //!
 //! Each Layer keeps to its own family of colours, so its dots can be told from the
 //! others' when several are on: earthquakes yellow to red, fire detections flame
 //! orange, storms white and aqua, alerts pink and violet.
 
 use orion_core::layer::{Theme, TimeCoverage};
-use orion_data::weather;
+use orion_data::hazards;
 
 use crate::feature_layer::{Class, Show, Spec};
 
@@ -14,8 +14,8 @@ use crate::feature_layer::{Class, Show, Spec};
 /// the week before that moment, as far as the listing reaches.
 pub static EARTHQUAKES: Spec = Spec {
     name: "Earthquakes",
-    theme: Theme::Weather,
-    listing: weather::EARTHQUAKES,
+    theme: Theme::Hazards,
+    listing: hazards::EARTHQUAKES,
     classes: &[
         Class::new("Magnitude under 4.5", [242, 201, 76]),
         Class::new("Magnitude 4.5 to 6", [242, 140, 40]),
@@ -34,8 +34,8 @@ pub static EARTHQUAKES: Spec = Spec {
 /// Hot spots seen from orbit in the past day.
 pub static FIRE_DETECTIONS: Spec = Spec {
     name: "Fire detections",
-    theme: Theme::Weather,
-    listing: weather::FIRE_DETECTIONS,
+    theme: Theme::Hazards,
+    listing: hazards::FIRE_DETECTIONS,
     classes: &[
         Class::new("High confidence", [255, 70, 20]),
         Class::new("Nominal confidence", [255, 138, 61]),
@@ -54,8 +54,8 @@ pub static FIRE_DETECTIONS: Spec = Spec {
 /// Tropical storms being tracked now.
 pub static STORMS: Spec = Spec {
     name: "Tropical storms",
-    theme: Theme::Weather,
-    listing: weather::STORMS,
+    theme: Theme::Hazards,
+    listing: hazards::STORMS,
     classes: &[
         Class::new("Hurricanes", [255, 255, 255]),
         Class::new("Tropical storms", [128, 255, 234]),
@@ -74,8 +74,8 @@ pub static STORMS: Spec = Spec {
 /// Weather alerts in force in the United States.
 pub static ALERTS: Spec = Spec {
     name: "U.S. weather alerts",
-    theme: Theme::Weather,
-    listing: weather::ALERTS,
+    theme: Theme::Hazards,
+    listing: hazards::ALERTS,
     classes: &[
         Class::new("Extreme", [255, 20, 147]),
         Class::new("Severe", [224, 64, 251]),
@@ -94,3 +94,25 @@ pub static ALERTS: Spec = Spec {
 
 /// Every Layer in this module, in the order they are listed.
 pub static ALL: [&Spec; 4] = [&EARTHQUAKES, &FIRE_DETECTIONS, &STORMS, &ALERTS];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_earthquake_a_storm_or_a_warning_is_a_hazard_not_weather() {
+        let names: Vec<&str> = ALL.iter().map(|spec| spec.name).collect();
+        assert_eq!(
+            names,
+            [
+                "Earthquakes",
+                "Fire detections",
+                "Tropical storms",
+                "U.S. weather alerts"
+            ]
+        );
+        for spec in ALL {
+            assert_eq!(spec.theme, Theme::Hazards, "{}", spec.name);
+        }
+    }
+}

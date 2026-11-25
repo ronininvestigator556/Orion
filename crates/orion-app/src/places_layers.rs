@@ -1,7 +1,7 @@
 //! Layers of places that stay where they are: airports, and what the project's
 //! Extracts carry from OpenStreetMap.
 //!
-//! As with the Weather Layers, each keeps to its own family of colours: airports
+//! As with the Hazards Layers, each keeps to its own family of colours: airports
 //! white and grey, cameras blue, data centres teal, military sites olive.
 
 use orion_core::layer::{Theme, TimeCoverage};

@@ -14,7 +14,8 @@ A sidebar lists the Layers under their Themes, each with a switch, a filter and 
 - **Places.** Airports, licence plate cameras, data centres and military sites.
 - **Energy.** Power plants by what they run on, pipelines drawn as their routes, refineries and oil sites, offshore platforms, mines by what they dig, and dams.
 - **Traffic.** Flights around the middle of the view, refreshed every few minutes and moved along their headings in between. Ships in the northern Baltic, the one sea whose ships are published for anyone to use without a key.
-- **Weather.** Earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts. And pictures laid over the Base Map: each day's clouds, the view from three weather satellites every ten minutes, rain and snow, and sea surface temperature.
+- **Weather.** Pictures laid over the Base Map: each day's clouds, the view from three weather satellites every ten minutes, rain and snow, and sea surface temperature.
+- **Hazards.** Earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts.
 - **Imported.** A file of your own places: drop a GeoJSON, KML or CSV file on the window, or give its path in the sidebar. It is read where it is and sent nowhere.
 
 A search box looks across every Layer that is on. From far away a Layer of many places gathers into Clusters, each showing how many places it stands for; clicking one moves in on it.

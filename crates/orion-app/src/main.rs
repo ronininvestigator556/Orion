@@ -9,6 +9,7 @@ mod energy_layers;
 mod feature_layer;
 mod feed;
 mod globe;
+mod hazard_layers;
 mod layer;
 mod lines;
 mod objects;
@@ -23,7 +24,6 @@ mod stars;
 mod tracked;
 mod traffic_layer;
 mod ui;
-mod weather_layers;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -433,7 +433,7 @@ impl Session {
         let specs = places_layers::ALL
             .into_iter()
             .chain(energy_layers::ALL)
-            .chain(weather_layers::ALL);
+            .chain(hazard_layers::ALL);
         for spec in specs {
             layers.add(Box::new(feature_layer::FeatureLayer::new(
                 spec,
