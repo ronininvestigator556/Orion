@@ -7,9 +7,9 @@ use glam::{Mat4, Vec3};
 
 /// Vertical field of view.
 pub const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
-/// Closest approach, in Earth radii from the centre: about 25 km above the surface,
-/// where the streamed Base Map's finest imagery is roughly one pixel per pixel.
-const MIN_DISTANCE: f32 = 1.004;
+/// Closest approach, in Earth radii from the centre: about 1.5 km above the surface,
+/// where the street map's names can be read.
+const MIN_DISTANCE: f32 = 1.000_235;
 /// Farthest retreat, in Earth radii from the centre (well beyond the geostationary ring at 6.6).
 const MAX_DISTANCE: f32 = 30.0;
 /// Stops short of the poles, where "up" would become undefined.

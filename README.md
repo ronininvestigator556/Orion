@@ -6,7 +6,7 @@ A desktop app that shows publicly available information about the world on a 3D 
 
 ## What it shows
 
-The globe has a live day and night side and the real naked-eye stars behind it. Drag to turn it and scroll to zoom, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names.
+The globe has a live day and night side and the real naked-eye stars behind it. Drag to turn it and scroll to zoom, down to about 1.5 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. Below about 50 km it gives way to a street map from OpenStreetMap, with every street and its name; the View panel can keep it to imagery, or show streets from any height.
 
 A sidebar lists the Layers under their Themes, each with a switch, a filter and a line saying where its data came from. Nothing is fetched for a Layer until it is switched on, and which Layers are on is remembered between launches.
 

@@ -13,6 +13,7 @@ use crate::camera::ViewFrame;
 use crate::layer::Toggle;
 use crate::reference::PlaceLabel;
 use crate::renderer::GpuInfo;
+use crate::streetmap::StreetChoice;
 use crate::tracked::Summary;
 
 /// Everything the diagnostics panel reports for one frame.
@@ -134,6 +135,24 @@ pub fn draw_view(ctx: &egui::Context, choices: &mut ViewChoices, can_follow: boo
                 .on_hover_text("Motorways and main roads, shown close to the ground.");
             ui.checkbox(&mut choices.base_map.names, "Place names")
                 .on_hover_text("Countries and cities, more of them the closer you are.");
+            ui.label("Close to the ground");
+            ui.horizontal(|ui| {
+                for choice in StreetChoice::ALL {
+                    ui.radio_value(&mut choices.base_map.streets, choice, choice.label())
+                        .on_hover_text(match choice {
+                            StreetChoice::Automatic => {
+                                "Imagery from far away, and a street map from OpenStreetMap \
+                                 once you are close enough for streets to matter."
+                            }
+                            StreetChoice::Imagery => {
+                                "Imagery at every height. No street map is fetched."
+                            }
+                            StreetChoice::Streets => {
+                                "The street map at every height, fetched from OpenStreetMap."
+                            }
+                        });
+                }
+            });
         });
 }
 

@@ -21,6 +21,7 @@ pub mod filter;
 pub mod frames;
 pub mod layer;
 pub mod reference;
+pub mod street_tiles;
 pub mod sun;
 pub mod tiles;
 pub mod time;

@@ -21,6 +21,7 @@ mod reference;
 mod renderer;
 mod sidebar;
 mod stars;
+mod streetmap;
 mod tracked;
 mod traffic_layer;
 mod ui;
@@ -164,6 +165,10 @@ fn parse_place(text: &str) -> Option<Place> {
         altitude_km,
     })
 }
+
+/// The names the street map's settings are kept under between runs.
+const STREET_CHOICE: &str = "base map.street map";
+const STREET_ADDRESS: &str = "street map.address";
 
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
      [--star-fixed] [--find <name or number> [--select-found]] [--at <latitude>,<longitude>[,<km above>]] \
@@ -317,6 +322,8 @@ struct Session {
     frames: u64,
     /// What the user has chosen to see of the Base Map.
     base_map: basemap::BaseMapChoices,
+    /// The pattern street tiles are fetched from.
+    street_address: String,
     place_names: reference::PlaceNames,
     /// Line segments for the current frame, kept to reuse the allocation.
     segments: Vec<Segment>,
@@ -421,7 +428,7 @@ impl Session {
     /// `settings_file` is where what is switched on is kept between runs. Without
     /// one, everything starts as at first launch and nothing is kept.
     fn new(
-        renderer: Renderer,
+        mut renderer: Renderer,
         cache: Option<Cache>,
         options: Options,
         settings_file: Option<orion_data::settings::SettingsFile>,
@@ -495,6 +502,24 @@ impl Session {
                 *switch = on;
             }
         }
+        if let Some(choice) = remembered
+            .get_text(STREET_CHOICE)
+            .and_then(streetmap::StreetChoice::from_setting)
+        {
+            base_map.streets = choice;
+        }
+        // Where street tiles come from is a setting, because the host may change.
+        let street_address = remembered
+            .get_text(STREET_ADDRESS)
+            .filter(|address| orion_data::streets::StreetTiles::is_address(address))
+            .unwrap_or(orion_data::streets::DEFAULT_ADDRESS)
+            .to_owned();
+        renderer.set_street_tiles(
+            orion_data::streets::StreetTiles::new(street_address.clone()),
+            layer_cache
+                .as_ref()
+                .map(|cache| cache.street_tiles(&street_address)),
+        );
         for wanted in &options.layers {
             let found = (0..layers.len()).find(|index| {
                 layers
@@ -559,6 +584,7 @@ impl Session {
             saved: remembered,
             frames: 0,
             base_map,
+            street_address,
             place_names: reference::PlaceNames::bundled(),
             segments: Vec::new(),
             cluster_dots: Vec::new(),
@@ -595,6 +621,8 @@ impl Session {
         for (name, switch) in base_map.switches() {
             settings.set(name, *switch);
         }
+        settings.set_text(STREET_CHOICE, self.base_map.streets.setting());
+        settings.set_text(STREET_ADDRESS, &self.street_address);
         settings
     }
 
@@ -823,7 +851,9 @@ impl Session {
             }
         }
 
-        let place_labels = if self.base_map.names {
+        // The street map has names of its own.
+        let streets_showing = self.renderer.street_map_showing();
+        let place_labels = if self.base_map.names && !streets_showing {
             self.place_names
                 .labels(&pick_view, scale_factor, sidebar::WIDTH)
         } else {
@@ -834,6 +864,9 @@ impl Session {
         let mut credits: Vec<&str> = Vec::new();
         if self.base_map.imagery {
             credits.push("Imagery: NASA");
+        }
+        if streets_showing {
+            credits.push(orion_data::streets::CREDIT);
         }
         for index in 0..self.layers.len() {
             let credit = self

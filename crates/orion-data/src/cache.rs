@@ -63,6 +63,12 @@ impl Cache {
         crate::tiles::TileCache::at(self.dir.join("tiles"))
     }
 
+    /// Where street map tiles fetched from `address` are kept. It is inside the Base
+    /// Map's folder, so the same limit on disk space covers both.
+    pub fn street_tiles(&self, address: &str) -> crate::streets::StreetCache {
+        crate::streets::StreetCache::at(self.dir.join("tiles"), address)
+    }
+
     /// The stored Element Sets, or `None` if there are none or they cannot be read.
     pub fn load(&self) -> Option<Loaded> {
         let fetched_at = self.read_time(FETCHED_AT)?;

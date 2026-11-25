@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     switches: BTreeMap<String, bool>,
+    /// Settings that are a choice or an address, not a switch.
+    texts: BTreeMap<String, String>,
 }
 
 impl Settings {
@@ -22,24 +24,39 @@ impl Settings {
         self.switches.insert(name.to_owned(), on);
     }
 
+    /// What a setting that is not a switch was set to, or `None` if nothing is
+    /// remembered about it.
+    pub fn get_text(&self, name: &str) -> Option<&str> {
+        self.texts.get(name).map(String::as_str)
+    }
+
+    pub fn set_text(&mut self, name: &str, value: &str) {
+        self.texts.insert(name.to_owned(), value.trim().to_owned());
+    }
+
     /// Reads settings written by [`Self::to_text`]. Lines that cannot be read are
     /// passed over, so a file from a newer or older version does no harm.
     pub fn parse(text: &str) -> Self {
-        let switches = text
-            .lines()
-            .filter(|line| !line.trim_start().starts_with('#'))
-            .filter_map(|line| {
-                let (name, value) = line.rsplit_once('=')?;
-                let on = match value.trim() {
-                    "on" => true,
-                    "off" => false,
-                    _ => return None,
-                };
-                Some((name.trim().to_owned(), on))
-            })
-            .filter(|(name, _)| !name.is_empty())
-            .collect();
-        Self { switches }
+        let mut settings = Self::default();
+        for line in text.lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            // The name ends at the first equals sign: an address may hold more.
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            let (name, value) = (name.trim(), value.trim());
+            if name.is_empty() || value.is_empty() {
+                continue;
+            }
+            match value {
+                "on" => settings.set(name, true),
+                "off" => settings.set(name, false),
+                other => settings.set_text(name, other),
+            }
+        }
+        settings
     }
 
     /// Writes the settings as text a person can read: a line for each switch.
@@ -51,6 +68,9 @@ impl Settings {
         for (name, on) in &self.switches {
             text.push_str(name);
             text.push_str(if *on { " = on\n" } else { " = off\n" });
+        }
+        for (name, value) in &self.texts {
+            text.push_str(&format!("{name} = {value}\n"));
         }
         text
     }
@@ -110,6 +130,28 @@ mod tests {
         assert_eq!(settings.get("layer.Earthquakes"), Some(true));
         assert_eq!(settings.get("layer.U.S. weather alerts"), Some(false));
         assert_eq!(settings.get("layer.Flights"), None);
+    }
+
+    #[test]
+    fn a_choice_or_an_address_is_kept_as_it_was_written() {
+        let mut settings = Settings::default();
+        settings.set("base map.borders", true);
+        settings.set_text("base map.street map", "automatic");
+        settings.set_text(
+            "street map.address",
+            "https://maps.example/tiles?key=abc&z={z}&x={x}&y={y}",
+        );
+        let read = Settings::parse(&settings.to_text());
+        assert_eq!(read, settings);
+        assert_eq!(read.get_text("base map.street map"), Some("automatic"));
+        // An address may have equals signs of its own.
+        assert_eq!(
+            read.get_text("street map.address"),
+            Some("https://maps.example/tiles?key=abc&z={z}&x={x}&y={y}")
+        );
+        assert_eq!(read.get_text("base map.borders"), None);
+        assert_eq!(read.get("base map.street map"), None);
+        assert_eq!(read.get_text("never set"), None);
     }
 
     #[test]

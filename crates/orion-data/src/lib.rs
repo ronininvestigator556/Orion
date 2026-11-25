@@ -12,6 +12,7 @@ pub mod listing;
 pub mod places;
 pub mod settings;
 mod source;
+pub mod streets;
 #[cfg(test)]
 mod test_support;
 pub mod tiles;

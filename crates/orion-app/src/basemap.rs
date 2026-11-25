@@ -15,6 +15,7 @@ use orion_data::tiles::{BLUE_MARBLE, LANDSAT, TileCache, TileLayer, TileSource, 
 use wgpu::util::DeviceExt as _;
 
 use crate::camera::FOV_Y;
+use crate::streetmap::StreetChoice;
 
 /// The coarsest level drawn. Its tiles are 72 degrees across, so fifteen cover the world.
 const MIN_LEVEL: u8 = 2;
@@ -121,6 +122,8 @@ pub struct BaseMapChoices {
     pub borders: bool,
     pub roads: bool,
     pub names: bool,
+    /// Whether the street map takes over close to the ground.
+    pub streets: StreetChoice,
 }
 
 impl BaseMapChoices {
@@ -142,6 +145,7 @@ impl Default for BaseMapChoices {
             borders: true,
             roads: true,
             names: true,
+            streets: StreetChoice::default(),
         }
     }
 }
@@ -709,7 +713,7 @@ impl BaseMap {
 
 /// A square grid of `cells` by `cells`, as points from (0, 0) to (1, 1) with x running
 /// east and y south, whose triangles wind counter-clockwise seen from outside the globe.
-fn grid_mesh(cells: u16) -> (Vec<[f32; 2]>, Vec<u16>) {
+pub(crate) fn grid_mesh(cells: u16) -> (Vec<[f32; 2]>, Vec<u16>) {
     let points = cells + 1;
     let mut vertices = Vec::with_capacity(usize::from(points) * usize::from(points));
     for row in 0..points {

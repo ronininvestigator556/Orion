@@ -20,6 +20,7 @@ use crate::lines::{Lines, Segment};
 use crate::objects::{Instance, Objects, View};
 use crate::reference::ReferenceLines;
 use crate::stars::Stars;
+use crate::streetmap::{StreetMap, StreetMapView};
 
 /// Background colour behind the globe, in linear RGB.
 const SPACE: wgpu::Color = wgpu::Color {
@@ -103,6 +104,7 @@ pub struct Renderer {
     /// Which of those to draw this frame.
     overlays_on_show: Vec<usize>,
     tile_cache: Option<TileCache>,
+    street_map: StreetMap,
     reference: ReferenceLines,
     stars: Stars,
     lines: Lines,
@@ -264,6 +266,7 @@ impl Renderer {
 
         let globe = Globe::new(&device, &queue, scene_format)?;
         let base_map = BaseMap::new(&device, scene_format, tile_cache.clone());
+        let street_map = StreetMap::new(&device, scene_format);
         let reference = ReferenceLines::new(&device, &queue, scene_format)?;
         let stars = Stars::new(&device, scene_format)?;
         let lines = Lines::new(&device, scene_format);
@@ -284,6 +287,7 @@ impl Renderer {
             base_map,
             overlays: Vec::new(),
             overlays_on_show: Vec::new(),
+            street_map,
             tile_cache,
             reference,
             stars,
@@ -319,6 +323,21 @@ impl Renderer {
     /// Size of the drawing area in pixels.
     pub fn size(&self) -> PhysicalSize<u32> {
         self.size
+    }
+
+    /// Says where the street map's tiles come from and where they are kept.
+    pub fn set_street_tiles(
+        &mut self,
+        source: orion_data::streets::StreetTiles,
+        cache: Option<orion_data::streets::StreetCache>,
+    ) {
+        self.street_map.set_source(source, cache);
+    }
+
+    /// True while the street map covers most of the Base Map beneath it. It carries
+    /// its own borders, roads and names, so Orion's are left off then.
+    pub fn street_map_showing(&self) -> bool {
+        self.street_map.is_showing()
     }
 
     /// Pixels per logical point.
@@ -438,6 +457,17 @@ impl Renderer {
                 .update(&self.device, &self.queue, &base_map_view);
             self.overlays_on_show.push(slot);
         }
+        self.street_map.update(
+            &self.device,
+            &self.queue,
+            &StreetMapView {
+                choice: scene.base_map.streets,
+                view_projection: scene.view_projection,
+                camera_position: scene.camera_position,
+                viewport,
+                pixels_per_point: scale_factor,
+            },
+        );
         self.reference.update(&self.queue, &view, scene.base_map);
         self.stars.update(
             &self.queue,
@@ -547,7 +577,11 @@ impl Renderer {
                 self.overlays[*slot].1.draw(&mut pass);
             }
             // Borders and roads lie on the ground, under everything that flies.
-            self.reference.draw(&mut pass);
+            self.street_map.draw(&mut pass);
+            // The street map draws its own borders and roads.
+            if !self.street_map.is_showing() {
+                self.reference.draw(&mut pass);
+            }
             for slot in &self.routes_on_show {
                 self.routes[*slot].2.draw(&mut pass);
             }
