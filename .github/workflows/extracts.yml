@@ -25,10 +25,9 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
+      # The job names itself only as "orion-extracts": it sends the query services no
+      # contact address (the script takes one from ORION_EXTRACTS_CONTACT if ever wanted).
       - name: Build the Extracts
-        env:
-          # Tells the operators of OpenStreetMap's query service who is asking.
-          ORION_EXTRACTS_CONTACT: ${{ github.server_url }}/${{ github.repository }}
         run: python3 tools/make_extracts.py extracts
       # Whatever was built is published even if some Extract failed: the run still
       # ends in failure, so it is noticed, and the failed one keeps its old copy.
