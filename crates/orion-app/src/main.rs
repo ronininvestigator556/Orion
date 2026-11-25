@@ -8,7 +8,6 @@ mod camera;
 mod energy_layers;
 mod feature_layer;
 mod feed;
-mod flight_layer;
 mod globe;
 mod layer;
 mod lines;
@@ -22,6 +21,7 @@ mod renderer;
 mod sidebar;
 mod stars;
 mod tracked;
+mod traffic_layer;
 mod ui;
 mod weather_layers;
 
@@ -441,9 +441,12 @@ impl Session {
                 layer_cache.clone(),
             )));
         }
-        layers.add(Box::new(flight_layer::FlightLayer::new(Arc::clone(
-            &fetcher,
-        ))));
+        for spec in [&traffic_layer::FLIGHTS, &traffic_layer::SHIPS] {
+            layers.add(Box::new(traffic_layer::TrafficLayer::new(
+                spec,
+                Arc::clone(&fetcher),
+            )));
+        }
         for spec in picture_layer::ALL {
             layers.add(Box::new(picture_layer::PictureLayer::new(spec)));
         }

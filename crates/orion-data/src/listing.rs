@@ -92,6 +92,10 @@ impl Fetcher for Http {
         if let Some(accept) = accept {
             request = request.header("Accept", accept);
         }
+        // Finland's Digitraffic asks every app to name itself in a header of its own.
+        if url.contains("digitraffic.fi/") {
+            request = request.header("Digitraffic-User", "Orion");
+        }
         let mut response = request.call().map_err(|error| match error {
             ureq::Error::StatusCode(status) => FetchError::Refused(status),
             other => FetchError::Network(other.to_string()),

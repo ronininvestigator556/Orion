@@ -1,5 +1,6 @@
-//! Live traffic: aircraft in flight, as reported by adsb.lol, a network of
-//! volunteers' receivers that publishes what it hears as open data.
+//! Live traffic: aircraft in flight, as reported by adsb.lol, a network of volunteers'
+//! receivers that publishes what it hears as open data, and ships in the northern
+//! Baltic, as heard by Finland's coastal receivers and published by Fintraffic.
 
 use orion_core::feature::stable_key;
 use serde_json::Value;
@@ -129,9 +130,239 @@ pub fn parse_aircraft(text: &str) -> Result<Vec<Aircraft>, ParseError> {
         .collect())
 }
 
+/// Who publishes the ship positions, as shown to the user.
+pub const SHIP_SOURCE: &str = "Fintraffic";
+/// Where each ship last reported itself. Open data under CC BY 4.0, no key needed.
+pub const SHIP_POSITIONS_URL: &str = "https://meri.digitraffic.fi/api/ais/v1/locations";
+/// What each ship says about itself: name, type, destination.
+pub const SHIP_DETAILS_URL: &str = "https://meri.digitraffic.fi/api/ais/v1/vessels";
+/// A position older than this, in seconds, says too little about where a ship is now.
+const SHIP_POSITION_MAX_AGE_S: f64 = 30.0 * 60.0;
+
+/// What kind of ship a transponder says it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShipKind {
+    Cargo,
+    Tanker,
+    Passenger,
+    /// Tugs, pilot boats, rescue and other working craft.
+    Service,
+    /// Fishing boats, yachts and pleasure craft.
+    FishingOrLeisure,
+    Other,
+}
+
+impl ShipKind {
+    /// Reads the type number ships broadcast, where the tens digit gives the kind.
+    fn from_code(code: u64) -> Self {
+        match code {
+            70..=79 => Self::Cargo,
+            80..=89 => Self::Tanker,
+            60..=69 => Self::Passenger,
+            31..=35 | 50..=59 => Self::Service,
+            30 | 36 | 37 => Self::FishingOrLeisure,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// One ship as last heard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ship {
+    /// Identifies the ship for as long as it is heard, from its radio identity.
+    pub key: u64,
+    /// Its maritime radio identity, nine digits.
+    pub mmsi: u64,
+    /// Empty if the ship's details have not been heard.
+    pub name: String,
+    pub call_sign: String,
+    pub kind: ShipKind,
+    /// The number its builders registered it under, where it has one.
+    pub imo: Option<u64>,
+    /// Where it says it is going, as its crew typed it.
+    pub destination: String,
+    pub draught_m: Option<f64>,
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
+    /// Speed over the ground in knots.
+    pub speed_kt: Option<f64>,
+    /// Direction of travel over the ground, in degrees clockwise from north.
+    pub course_deg: Option<f64>,
+    /// What it reports itself as doing, in words.
+    pub status: &'static str,
+    /// True if it reports itself moored, at anchor or aground.
+    pub at_rest: bool,
+    /// How long before the answer was made the position was heard, in seconds.
+    pub position_age_s: f64,
+}
+
+/// Reads Fintraffic's list of ship positions, joined to its list of ships' details.
+/// Positions more than half an hour old are left out.
+pub fn parse_ships(positions: &str, details: &str) -> Result<Vec<Ship>, ParseError> {
+    let read = |text: &str| -> Result<Value, ParseError> {
+        serde_json::from_str(text).map_err(|error| ParseError(error.to_string()))
+    };
+    let positions = read(positions)?;
+    let listed = positions["features"]
+        .as_array()
+        .ok_or_else(|| ParseError("no list of ship positions".to_owned()))?;
+    let details = read(details)?;
+    let described: std::collections::HashMap<u64, &Value> = details
+        .as_array()
+        .ok_or_else(|| ParseError("no list of ships".to_owned()))?
+        .iter()
+        .filter_map(|ship| Some((ship["mmsi"].as_u64()?, ship)))
+        .collect();
+    // The answer is as old as its newest position; each position's age is measured from that.
+    let newest = listed
+        .iter()
+        .filter_map(|entry| entry["properties"]["timestampExternal"].as_f64())
+        .fold(0.0, f64::max);
+
+    Ok(listed
+        .iter()
+        .filter_map(|entry| {
+            let properties = &entry["properties"];
+            let mmsi = entry["mmsi"]
+                .as_u64()
+                .or_else(|| properties["mmsi"].as_u64())?;
+            let coordinates = &entry["geometry"]["coordinates"];
+            let (longitude_deg, latitude_deg) =
+                (coordinates[0].as_f64()?, coordinates[1].as_f64()?);
+            if !(-90.0..=90.0).contains(&latitude_deg) || !(-180.0..=180.0).contains(&longitude_deg)
+            {
+                return None;
+            }
+            let heard = properties["timestampExternal"].as_f64()?;
+            let position_age_s = ((newest - heard) / 1000.0).max(0.0);
+            if position_age_s > SHIP_POSITION_MAX_AGE_S {
+                return None;
+            }
+            let (status, at_rest) = match properties["navStat"].as_u64() {
+                Some(0) => ("Under way using its engine", false),
+                Some(1) => ("At anchor", true),
+                Some(2) => ("Not under command", false),
+                Some(3) => ("Restricted in its ability to manoeuvre", false),
+                Some(4) => ("Constrained by its draught", false),
+                Some(5) => ("Moored", true),
+                Some(6) => ("Aground", true),
+                Some(7) => ("Fishing", false),
+                Some(8) => ("Under way sailing", false),
+                _ => ("", false),
+            };
+            let about = described.get(&mmsi);
+            let text_of = |key: &str| {
+                about
+                    .and_then(|ship| ship[key].as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned()
+            };
+            // Speeds and courses are sent as "not available" numbers when unknown.
+            let speed_kt = properties["sog"].as_f64().filter(|speed| *speed < 102.0);
+            let course_deg = properties["cog"].as_f64().filter(|course| *course < 360.0);
+            Some(Ship {
+                key: stable_key(&mmsi.to_string()),
+                mmsi,
+                name: text_of("name"),
+                call_sign: text_of("callSign"),
+                kind: ShipKind::from_code(
+                    about
+                        .and_then(|ship| ship["shipType"].as_u64())
+                        .unwrap_or(0),
+                ),
+                imo: about
+                    .and_then(|ship| ship["imo"].as_u64())
+                    .filter(|imo| *imo > 0),
+                destination: text_of("destination"),
+                // Draught is sent in tenths of a metre.
+                draught_m: about
+                    .and_then(|ship| ship["draught"].as_f64())
+                    .filter(|draught| *draught > 0.0)
+                    .map(|draught| draught / 10.0),
+                latitude_deg,
+                longitude_deg,
+                speed_kt,
+                course_deg,
+                status,
+                at_rest,
+                position_age_s,
+            })
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SHIP_POSITIONS: &str = r#"{"type":"FeatureCollection","dataUpdatedTime":"2026-11-25T11:21:25Z","features":[
+        {"mmsi":255802540,"type":"Feature","geometry":{"type":"Point","coordinates":[24.95,60.10]},
+         "properties":{"mmsi":255802540,"sog":12.4,"cog":195.0,"navStat":0,"heading":195,"timestampExternal":1795605524000}},
+        {"mmsi":230000001,"type":"Feature","geometry":{"type":"Point","coordinates":[21.2148,62.3527]},
+         "properties":{"mmsi":230000001,"sog":0.0,"cog":360.0,"navStat":5,"heading":511,"timestampExternal":1795605464000}},
+        {"mmsi":230000002,"type":"Feature","geometry":{"type":"Point","coordinates":[22.0,60.0]},
+         "properties":{"mmsi":230000002,"sog":102.3,"cog":10.0,"navStat":15,"timestampExternal":1795605500000}},
+        {"mmsi":230000003,"type":"Feature","geometry":{"type":"Point","coordinates":[23.0,60.0]},
+         "properties":{"mmsi":230000003,"sog":5.0,"cog":10.0,"navStat":0,"timestampExternal":1795500000000}}]}"#;
+    const SHIP_DETAILS: &str = r#"[
+        {"callSign":"CQPB","destination":"NLRTM","draught":59,"imo":9350783,"mmsi":255802540,"name":"ALAND","shipType":70},
+        {"callSign":"OJAA","destination":"","draught":0,"imo":0,"mmsi":230000001,"name":"HARBOUR TUG","shipType":52}]"#;
+
+    #[test]
+    fn ships_are_read_with_their_details_joined_on() {
+        let ships = parse_ships(SHIP_POSITIONS, SHIP_DETAILS).unwrap();
+        // The one last heard a day ago is left out.
+        assert_eq!(ships.len(), 3);
+
+        let cargo = &ships[0];
+        assert_eq!(cargo.name, "ALAND");
+        assert_eq!(cargo.kind, ShipKind::Cargo);
+        assert_eq!(cargo.imo, Some(9_350_783));
+        assert_eq!(cargo.destination, "NLRTM");
+        assert_eq!(cargo.draught_m, Some(5.9));
+        assert_eq!((cargo.latitude_deg, cargo.longitude_deg), (60.10, 24.95));
+        assert_eq!(cargo.speed_kt, Some(12.4));
+        assert_eq!(cargo.course_deg, Some(195.0));
+        assert_eq!(cargo.status, "Under way using its engine");
+        assert!(!cargo.at_rest);
+        assert_eq!(cargo.position_age_s, 0.0);
+
+        let tug = &ships[1];
+        assert_eq!(tug.kind, ShipKind::Service);
+        assert!(tug.at_rest);
+        assert_eq!(tug.status, "Moored");
+        // A course of 360 means "not known", as does a draught or number of nothing.
+        assert_eq!(tug.course_deg, None);
+        assert_eq!(tug.draught_m, None);
+        assert_eq!(tug.imo, None);
+        assert_eq!(tug.position_age_s, 60.0);
+
+        // One whose details have not been heard is still shown, without a name.
+        let unnamed = &ships[2];
+        assert_eq!(unnamed.name, "");
+        assert_eq!(unnamed.kind, ShipKind::Other);
+        assert_eq!(unnamed.speed_kt, None);
+        assert_ne!(unnamed.key, cargo.key);
+    }
+
+    #[test]
+    fn answers_that_are_not_ship_lists_are_errors() {
+        assert!(parse_ships("<html></html>", SHIP_DETAILS).is_err());
+        assert!(parse_ships(SHIP_POSITIONS, "{}").is_err());
+        assert!(parse_ships("{}", "[]").is_err());
+        assert_eq!(parse_ships(r#"{"features":[]}"#, "[]").unwrap(), []);
+    }
+
+    #[test]
+    fn ship_kinds_follow_the_broadcast_type_number() {
+        assert_eq!(ShipKind::from_code(70), ShipKind::Cargo);
+        assert_eq!(ShipKind::from_code(89), ShipKind::Tanker);
+        assert_eq!(ShipKind::from_code(60), ShipKind::Passenger);
+        assert_eq!(ShipKind::from_code(52), ShipKind::Service);
+        assert_eq!(ShipKind::from_code(30), ShipKind::FishingOrLeisure);
+        assert_eq!(ShipKind::from_code(0), ShipKind::Other);
+    }
 
     const ANSWER: &str = r#"{"ac":[
         {"hex":"4caa41","type":"adsb_icao","flight":"EIN142  ","r":"EI-EIN","t":"A333","alt_baro":12825,
