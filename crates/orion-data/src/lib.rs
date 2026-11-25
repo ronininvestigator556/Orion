@@ -6,6 +6,7 @@
 
 pub mod advisories;
 mod cache;
+pub mod disasters;
 pub mod hazards;
 pub mod import;
 pub mod listing;

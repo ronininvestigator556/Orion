@@ -1,12 +1,12 @@
 //! The Layers under the Hazards Theme: earthquakes, fire detections, tropical storms,
-//! U.S. weather alerts and Travel Advisories.
+//! U.S. weather alerts, disaster, tsunami and volcano alerts, and Travel Advisories.
 //!
 //! Each Layer keeps to its own family of colours, so its dots can be told from the
 //! others' when several are on: earthquakes yellow to red, fire detections flame
 //! orange, storms white and aqua, alerts pink and violet.
 
 use orion_core::layer::{Theme, TimeCoverage};
-use orion_data::{advisories, hazards};
+use orion_data::{advisories, disasters, hazards};
 
 use crate::feature_layer::{Class, Show, Spec};
 
@@ -124,12 +124,102 @@ pub static TRAVEL_ADVISORIES: Spec = Spec {
     ring_km: 0.0,
 };
 
+/// Disasters anywhere that may need help from abroad, as GDACS rates them.
+pub static DISASTERS: Spec = Spec {
+    name: "Disaster alerts",
+    theme: Theme::Hazards,
+    listing: disasters::DISASTERS,
+    classes: &[
+        Class::new("Red: likely to need help from abroad", [213, 0, 0]),
+        Class::new("Orange: may need help from abroad", [255, 145, 0]),
+        // Most of the list is small wildfires, which would bury the rest.
+        Class::hidden("Green: unlikely to need help", [102, 187, 106]),
+    ],
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::Always,
+    dot_scale: |alert| 2.0 + 0.6 * alert.size,
+    note: "Earthquakes, cyclones, floods, droughts, wildfires and eruptions that GDACS is \
+           following. Its levels come from models and are not checked by a person before \
+           they go out; a country's own authorities are the ones to heed. Green alerts \
+           are hidden until asked for.",
+    attribution: "Disaster alerts: GDACS, © European Union, CC BY 4.0",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
+/// The kinds of tsunami message, the same for both warning centres.
+const TSUNAMI_KINDS: [Class; 3] = [
+    Class::new("Warning", [255, 23, 68]),
+    Class::new("Watch or advisory", [255, 171, 64]),
+    // Nearly every message says only that an earthquake poses no danger.
+    Class::hidden("Information: no danger", [128, 222, 234]),
+];
+const TSUNAMI_NOTE: &str = "Messages from the past two days, each marked at its earthquake, not at \
+     the coasts it concerns. Nearly all say there is no danger, and those are hidden until \
+     asked for.";
+
+pub static TSUNAMI_PACIFIC: Spec = Spec {
+    name: "Tsunami messages: Pacific",
+    theme: Theme::Hazards,
+    listing: disasters::TSUNAMI_PACIFIC,
+    classes: &TSUNAMI_KINDS,
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::Recent { days: 2.0 },
+    dot_scale: |_| 2.6,
+    note: TSUNAMI_NOTE,
+    attribution: "",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
+pub static TSUNAMI_NORTH_AMERICA: Spec = Spec {
+    name: "Tsunami messages: North America",
+    theme: Theme::Hazards,
+    listing: disasters::TSUNAMI_NORTH_AMERICA,
+    classes: &TSUNAMI_KINDS,
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::Recent { days: 2.0 },
+    dot_scale: |_| 2.6,
+    note: TSUNAMI_NOTE,
+    attribution: "",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
+pub static VOLCANOES: Spec = Spec {
+    name: "Volcano alerts: United States",
+    theme: Theme::Hazards,
+    listing: disasters::VOLCANOES,
+    classes: &[
+        Class::new("Warning", [221, 44, 0]),
+        Class::new("Watch", [255, 109, 0]),
+        Class::new("Advisory", [255, 214, 0]),
+        Class::hidden("Normal", [165, 214, 167]),
+    ],
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::Always,
+    dot_scale: |volcano| 1.6 + 0.5 * volcano.size,
+    note: "The volcanoes of the United States that are watched closely enough to be given \
+           an alert level. Those at rest are hidden until asked for.",
+    attribution: "",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
 /// Every Layer in this module, in the order they are listed.
-pub static ALL: [&Spec; 5] = [
+pub static ALL: [&Spec; 9] = [
     &EARTHQUAKES,
     &FIRE_DETECTIONS,
     &STORMS,
     &ALERTS,
+    &DISASTERS,
+    &TSUNAMI_PACIFIC,
+    &TSUNAMI_NORTH_AMERICA,
+    &VOLCANOES,
     &TRAVEL_ADVISORIES,
 ];
 
@@ -147,12 +237,46 @@ mod tests {
                 "Fire detections",
                 "Tropical storms",
                 "U.S. weather alerts",
+                "Disaster alerts",
+                "Tsunami messages: Pacific",
+                "Tsunami messages: North America",
+                "Volcano alerts: United States",
                 "Travel advisories"
             ]
         );
         for spec in ALL {
             assert_eq!(spec.theme, Theme::Hazards, "{}", spec.name);
         }
+    }
+
+    #[test]
+    fn alerts_that_say_nothing_is_wrong_are_hidden_until_asked_for() {
+        let hidden = |spec: &Spec| -> Vec<&str> {
+            spec.classes
+                .iter()
+                .filter(|class| !class.on)
+                .map(|class| class.label)
+                .collect()
+        };
+        assert_eq!(hidden(&DISASTERS), ["Green: unlikely to need help"]);
+        assert_eq!(hidden(&TSUNAMI_PACIFIC), ["Information: no danger"]);
+        assert_eq!(hidden(&TSUNAMI_NORTH_AMERICA), ["Information: no danger"]);
+        assert_eq!(hidden(&VOLCANOES), ["Normal"]);
+        // The classes are in the order the readers number them.
+        use orion_data::disasters::{disaster_class, tsunami_class, volcano_class};
+        assert_eq!(
+            usize::from(disaster_class::GREEN),
+            DISASTERS.classes.len() - 1
+        );
+        assert_eq!(
+            usize::from(tsunami_class::INFORMATION),
+            TSUNAMI_KINDS.len() - 1
+        );
+        assert_eq!(
+            usize::from(volcano_class::NORMAL),
+            VOLCANOES.classes.len() - 1
+        );
+        assert!(DISASTERS.attribution.contains("CC BY 4.0"));
     }
 
     #[test]
