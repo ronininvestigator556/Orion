@@ -4,7 +4,7 @@
 //! Such a Layer has no Features. It follows the Simulation Clock: move the clock back
 //! and the picture is the one from then, as far back as the Source keeps them.
 
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
@@ -18,6 +18,10 @@ use crate::objects::Instance;
 /// Who publishes every picture here, as shown to the user.
 const SOURCE: &str = "NASA's Global Imagery Browse Services";
 const MINUTE: f64 = 1.0 / 1_440.0;
+/// How long the moment wanted must stay the same before its picture is fetched. With
+/// the Simulation Clock running fast the moment changes many times a second, and
+/// asking the Source for each one would be a flood of requests for pictures nobody sees.
+const SETTLE: Duration = Duration::from_millis(1200);
 
 /// How often a picture is made, and how long after the fact it is published.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,6 +85,8 @@ pub struct PictureLayer {
     on: bool,
     /// The moment of the picture on show, as the Source writes it.
     showing: Option<String>,
+    /// The moment the Simulation Clock calls for, and since when it has.
+    wanted: Option<(String, Instant)>,
 }
 
 impl PictureLayer {
@@ -90,12 +96,25 @@ impl PictureLayer {
             spec,
             on: false,
             showing: None,
+            wanted: None,
         }
     }
 
-    fn show(&mut self, at: JulianDate, real_now: JulianDate) {
+    /// Notes the moment the Simulation Clock calls for, and shows its picture once
+    /// the clock has called for it long enough. The first picture is shown at once.
+    fn show(&mut self, at: JulianDate, real_now: JulianDate, now: Instant) {
         let (_, written) = picture_moment(self.spec.step, at, real_now);
-        self.showing = Some(written);
+        if self.showing.is_none() {
+            self.showing = Some(written.clone());
+        }
+        match &self.wanted {
+            Some((wanted, since)) if *wanted == written => {
+                if now.duration_since(*since) >= SETTLE {
+                    self.showing = Some(written);
+                }
+            }
+            _ => self.wanted = Some((written, now)),
+        }
     }
 }
 
@@ -130,6 +149,7 @@ impl Layer for PictureLayer {
         self.on = on;
         if !on {
             self.showing = None;
+            self.wanted = None;
         }
     }
 
@@ -172,7 +192,7 @@ impl Layer for PictureLayer {
     }
 
     fn update(&mut self, at: JulianDate, _highlight: Highlight) {
-        self.show(at, real_now());
+        self.show(at, real_now(), Instant::now());
     }
 
     fn dots(&self) -> &[Instance] {
@@ -338,7 +358,7 @@ mod tests {
         assert_eq!(layer.picture(), None);
         assert!(!layer.has_features());
         layer.set_on(true);
-        layer.show(at(24, 6, 55), at(25, 11, 0));
+        layer.show(at(24, 6, 55), at(25, 11, 0), Instant::now());
         let Some(Picture::Overlay { tiles, opacity, .. }) = layer.picture() else {
             panic!("no picture");
         };
@@ -353,6 +373,37 @@ mod tests {
 
         layer.set_on(false);
         assert_eq!(layer.picture(), None);
+    }
+
+    #[test]
+    fn the_picture_changes_only_once_the_clock_has_settled_on_a_moment() {
+        let mut layer = PictureLayer::new(&GOES_EAST);
+        layer.set_on(true);
+        let real = at(25, 11, 0);
+        let start = Instant::now();
+        let showing = |layer: &PictureLayer| layer.showing.clone().unwrap();
+
+        // The first picture is shown at once.
+        layer.show(at(24, 6, 0), real, start);
+        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+
+        // The clock racing through ten minutes every tenth of a second changes nothing.
+        for step in 1_u32..=20 {
+            let moment = JulianDate(at(24, 6, 0).0 + f64::from(step) * 10.0 * MINUTE);
+            layer.show(
+                moment,
+                real,
+                start + Duration::from_millis(100 * u64::from(step)),
+            );
+        }
+        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+
+        // Once it stops, the picture for where it stopped is shown after a moment.
+        let stopped = JulianDate(at(24, 6, 0).0 + 200.0 * MINUTE);
+        layer.show(stopped, real, start + Duration::from_millis(2500));
+        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+        layer.show(stopped, real, start + Duration::from_millis(3300));
+        assert_eq!(showing(&layer), "2026-11-24T09:20:00Z");
     }
 
     #[test]
