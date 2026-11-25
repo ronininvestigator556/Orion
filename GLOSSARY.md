@@ -11,7 +11,7 @@ One kind of thing from one kind of source, shown or hidden as a whole, with its 
 _Avoid_: Overlay, dataset, category
 
 **Theme**:
-A heading under which related Layers are listed: Orbit, Places, Energy, Roads, Traffic, Weather, Hazards, Unrest or Imported. Traffic is the Theme of vehicles shown moving, such as aircraft and ships; what is happening on the roads themselves belongs to Roads. Weather is the Theme of pictures of the sky and sea; an earthquake, a storm or an official warning belongs to Hazards.
+A heading under which related Layers are listed: Orbit, Places, Energy, Roads, Traffic, Weather, Hazards, Unrest, Conflict or Imported. Traffic is the Theme of vehicles shown moving, such as aircraft and ships; what is happening on the roads themselves belongs to Roads. Weather is the Theme of pictures of the sky and sea; an earthquake, a storm or an official warning belongs to Hazards.
 _Avoid_: Group, category, folder, section
 
 **Feature**:
@@ -41,6 +41,22 @@ _Avoid_: Wildfire, fire, hotspot
 **Unrest Report**:
 A protest, a protest with violence or a strike as news articles reported it, in a town and on a day. It is a report, not an observation: it may be late, placed no more exactly than the town, or wrong, and it never says where a crowd is at this moment or what is planned.
 _Avoid_: Protest or riot (as the general word), civil emergency, incident, demonstration
+
+**Armed Conflict**:
+Fighting between named parties, states or organised armed groups, that a Source follows under one name from month to month.
+_Avoid_: War (as the general word), crisis, hostilities
+
+**Conflict Event**:
+One incident of organised violence in which at least one person died, as a Source recorded it: where, on what day, between whom, and how many are estimated to have died. It is one of three kinds: fighting that involves a state, fighting between armed groups, or an attack on civilians.
+_Avoid_: Battle, attack (as the general word), terrorism, incident
+
+**Navigation Warning**:
+A government's notice to ships that an area of sea is dangerous for a time, as for missile firing, gunnery or mines.
+_Avoid_: Exclusion zone, closed area, NAVAREA, alert
+
+**Airspace Warning**:
+An aviation authority's notice that a country's airspace is dangerous to fly through because of a conflict.
+_Avoid_: No-fly zone, NOTAM, alert
 
 **Travel Advisory**:
 A government's published advice about travelling to a country, with the level of caution it sets. It speaks for the whole country, or names parts of it in words.
