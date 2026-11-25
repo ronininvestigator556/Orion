@@ -5,6 +5,7 @@
 
 mod basemap;
 mod camera;
+mod conflict_layers;
 mod energy_layers;
 mod feature_layer;
 mod feed;
@@ -446,7 +447,8 @@ impl Session {
             .into_iter()
             .chain(energy_layers::ALL)
             .chain(road_layers::ALL)
-            .chain(hazard_layers::ALL);
+            .chain(hazard_layers::ALL)
+            .chain(conflict_layers::ALL);
         for spec in specs {
             layers.add(Box::new(feature_layer::FeatureLayer::new(
                 spec,

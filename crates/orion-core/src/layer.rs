@@ -21,12 +21,14 @@ pub enum Theme {
     Hazards,
     /// Protests and strikes as reported.
     Unrest,
+    /// Armed conflict, and warnings of military activity.
+    Conflict,
     Imported,
 }
 
 impl Theme {
     /// Every Theme, in the order they are listed.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Orbit,
         Self::Places,
         Self::Energy,
@@ -35,6 +37,7 @@ impl Theme {
         Self::Weather,
         Self::Hazards,
         Self::Unrest,
+        Self::Conflict,
         Self::Imported,
     ];
 
@@ -48,6 +51,7 @@ impl Theme {
             Self::Weather => "Weather",
             Self::Hazards => "Hazards",
             Self::Unrest => "Unrest",
+            Self::Conflict => "Conflict",
             Self::Imported => "Imported",
         }
     }
@@ -131,7 +135,7 @@ mod tests {
             names,
             [
                 "Orbit", "Places", "Energy", "Roads", "Traffic", "Weather", "Hazards", "Unrest",
-                "Imported"
+                "Conflict", "Imported"
             ]
         );
     }

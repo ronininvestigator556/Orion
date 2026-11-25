@@ -1,0 +1,38 @@
+name: Conflicts
+
+# Builds the files of Armed Conflicts and Conflict Events from the Uppsala Conflict
+# Data Program's monthly record, and publishes them beside the Extracts (ADR 0004).
+# UCDP puts out a month about three weeks after it ends, so once a week is plenty.
+
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: conflicts
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      # The job stops without writing if none of UCDP's monthly files can be read,
+      # so the last good files stay in place.
+      - name: Build from UCDP's newest three months
+        run: python3 tools/make_conflicts.py conflicts
+      - name: Publish
+        run: |
+          if ! gh release view extracts >/dev/null 2>&1; then
+            gh release create extracts --latest=false --title "Extracts" \
+              --notes "Files of places that Orion downloads, rebuilt on a schedule. This is not a version of the app: for that, see the other releases."
+          fi
+          gh release upload extracts conflicts/armed_conflicts.tsv conflicts/conflict_events.tsv --clobber
