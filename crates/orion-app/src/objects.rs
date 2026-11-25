@@ -14,27 +14,52 @@ const DOT_RADIUS_POINTS: f32 = 1.5;
 pub struct Instance {
     /// Position in Earth radii in the Earth-fixed frame.
     position: [f32; 3],
-    kind: u32,
+    /// The kind in the low byte, with the `Marks` as bit flags above it.
+    kind_and_marks: u32,
 }
+
+/// Ways a dot can be made to stand out, or fade.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub selected: bool,
+    pub hovered: bool,
+    /// The Element Set is too old for the Position to be trusted.
+    pub stale: bool,
+}
+
+// These must match the constants in the shader.
+const SELECTED: u32 = 1 << 8;
+const HOVERED: u32 = 1 << 9;
+const STALE: u32 = 1 << 10;
 
 impl Instance {
     /// An instance that draws nothing. It sits at Earth's centre, where the shader's
     /// "is Earth in the way" test always hides it.
     pub const HIDDEN: Self = Self {
         position: [0.0; 3],
-        kind: u32::MAX,
+        kind_and_marks: u32::MAX,
     };
 
-    pub fn new(position: Vec3, kind: ObjectKind) -> Self {
+    pub fn new(position: Vec3, kind: ObjectKind, marks: Marks) -> Self {
+        // Must match the order of the colour table in the shader.
+        let kind = match kind {
+            ObjectKind::Satellite => 0,
+            ObjectKind::RocketBody => 1,
+            ObjectKind::Debris => 2,
+        };
+        let flag = |set: bool, bit: u32| if set { bit } else { 0 };
         Self {
             position: position.to_array(),
-            // Must match the order of the colour table in the shader.
-            kind: match kind {
-                ObjectKind::Satellite => 0,
-                ObjectKind::RocketBody => 1,
-                ObjectKind::Debris => 2,
-            },
+            kind_and_marks: kind
+                | flag(marks.selected, SELECTED)
+                | flag(marks.hovered, HOVERED)
+                | flag(marks.stale, STALE),
         }
+    }
+
+    /// Position in Earth radii in the Earth-fixed frame.
+    pub fn position(&self) -> Vec3 {
+        Vec3::from_array(self.position)
     }
 
     pub fn is_hidden(&self) -> bool {

@@ -9,6 +9,7 @@ use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 use crate::globe::Globe;
+use crate::lines::{Lines, Segment};
 use crate::objects::{Instance, Objects, View};
 
 /// Background colour behind the globe, in linear RGB.
@@ -34,6 +35,8 @@ pub struct Scene<'a> {
     pub sun_direction: Vec3,
     /// One dot per Tracked Object.
     pub objects: &'a [Instance],
+    /// Orbit Paths and Ground Tracks.
+    pub lines: &'a [Segment],
 }
 
 pub struct Renderer {
@@ -47,6 +50,7 @@ pub struct Renderer {
     gpu_info: GpuInfo,
 
     globe: Globe,
+    lines: Lines,
     objects: Objects,
 
     egui_ctx: egui::Context,
@@ -96,6 +100,7 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let globe = Globe::new(&device, &queue, scene_format)?;
+        let lines = Lines::new(&device, scene_format);
         let objects = Objects::new(&device, scene_format);
 
         let info = adapter.get_info();
@@ -128,6 +133,7 @@ impl Renderer {
             scene_format,
             gpu_info,
             globe,
+            lines,
             objects,
             egui_ctx,
             egui_state,
@@ -139,6 +145,11 @@ impl Renderer {
     /// in which case the scene should ignore it.
     pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         self.egui_state.on_window_event(window, event).consumed
+    }
+
+    /// True if the cursor is over a panel, so the scene beneath should not react to it.
+    pub fn pointer_over_interface(&self) -> bool {
+        self.egui_ctx.is_pointer_over_egui()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -185,17 +196,16 @@ impl Renderer {
 
         self.globe
             .update(&self.queue, scene.view_projection, scene.sun_direction);
-        self.objects.update(
-            &self.device,
-            &self.queue,
-            &View {
-                view_projection: scene.view_projection,
-                camera_position: scene.camera_position,
-                viewport: [self.config.width, self.config.height],
-                scale_factor: window.scale_factor() as f32,
-            },
-            scene.objects,
-        );
+        let view = View {
+            view_projection: scene.view_projection,
+            camera_position: scene.camera_position,
+            viewport: [self.config.width, self.config.height],
+            scale_factor: window.scale_factor() as f32,
+        };
+        self.lines
+            .update(&self.device, &self.queue, &view, scene.lines);
+        self.objects
+            .update(&self.device, &self.queue, &view, scene.objects);
 
         let raw_input = self.egui_state.take_egui_input(window);
         let gpu_info = &self.gpu_info;
@@ -249,6 +259,8 @@ impl Renderer {
                 ..Default::default()
             });
             self.globe.draw(&mut pass);
+            // Lines go under the dots so a dot on a line stays readable.
+            self.lines.draw(&mut pass);
             self.objects.draw(&mut pass);
         }
 

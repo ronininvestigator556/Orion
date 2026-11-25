@@ -2,13 +2,59 @@
 
 use std::time::{Duration, Instant};
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use orion_core::EARTH_EQUATORIAL_RADIUS_KM;
 use orion_core::catalogue::{ObjectKind, TrackedObject};
-use orion_core::time::JulianDate;
+use orion_core::frames::{Geodetic, geodetic};
+use orion_core::time::{CalendarTime, JulianDate};
 use rayon::prelude::*;
 
-use crate::objects::Instance;
+use crate::objects::{Instance, Marks};
+
+/// Element Sets older than this give Positions too unreliable to show at full strength.
+const STALE_AFTER_DAYS: f64 = 30.0;
+/// Points used to draw one revolution of an Orbit Path or Ground Track.
+const PATH_SAMPLES: usize = 361;
+/// Radius, in Earth radii, at which the Ground Track is drawn: just clear of the surface.
+const GROUND_TRACK_RADIUS: f32 = 1.003;
+
+/// Which Tracked Objects, by index, should stand out in the next frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Highlight {
+    pub selected: Option<usize>,
+    pub hovered: Option<usize>,
+}
+
+/// Everything the information panel shows about one Tracked Object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Details {
+    pub name: String,
+    pub catalogue_number: u32,
+    pub designator: String,
+    pub kind: ObjectKind,
+    pub epoch: CalendarTime,
+    pub element_age_days: f64,
+    /// The Element Set is too old for the Position to be trusted.
+    pub stale: bool,
+    pub period_minutes: f64,
+    pub inclination_deg: f64,
+    pub eccentricity: f64,
+    pub apogee_altitude_km: f64,
+    pub perigee_altitude_km: f64,
+    /// `None` if the object has no Position at this moment.
+    pub now: Option<Now>,
+}
+
+/// Where a Tracked Object is at the moment on show.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Now {
+    pub over: Geodetic,
+    pub speed_km_s: f64,
+}
+
+fn to_earth_radii(position_km: [f64; 3]) -> Vec3 {
+    (DVec3::from_array(position_km) / EARTH_EQUATORIAL_RADIUS_KM).as_vec3()
+}
 
 pub struct Tracked {
     objects: Vec<TrackedObject>,
@@ -57,19 +103,86 @@ impl Tracked {
     }
 
     /// Computes every Tracked Object's Position at the given moment.
-    pub fn propagate(&mut self, at: JulianDate) {
+    pub fn propagate(&mut self, at: JulianDate, highlight: Highlight) {
         let started = Instant::now();
         self.objects
             .par_iter()
-            .map(|object| match object.element_set.position(at) {
-                Some(position_km) => Instance::new(
-                    (DVec3::from_array(position_km) / EARTH_EQUATORIAL_RADIUS_KM).as_vec3(),
-                    object.kind,
-                ),
-                None => Instance::HIDDEN,
+            .enumerate()
+            .map(|(index, object)| {
+                let Some(position_km) = object.element_set.position(at) else {
+                    return Instance::HIDDEN;
+                };
+                let marks = Marks {
+                    selected: highlight.selected == Some(index),
+                    hovered: highlight.hovered == Some(index),
+                    stale: object.element_set.age_days(at) > STALE_AFTER_DAYS,
+                };
+                Instance::new(to_earth_radii(position_km), object.kind, marks)
             })
             .collect_into_vec(&mut self.instances);
         self.last_propagation = started.elapsed();
+    }
+
+    /// The index of the Tracked Object with this catalogue number, if it is on show.
+    pub fn index_of(&self, catalogue_number: u32) -> Option<usize> {
+        self.objects
+            .iter()
+            .position(|object| object.catalogue_number == catalogue_number)
+    }
+
+    pub fn object(&self, index: usize) -> Option<&TrackedObject> {
+        self.objects.get(index)
+    }
+
+    /// What the information panel shows about one Tracked Object at the given moment.
+    pub fn details(&self, index: usize, at: JulianDate) -> Option<Details> {
+        let object = self.objects.get(index)?;
+        let element_set = &object.element_set;
+        let element_age_days = element_set.age_days(at);
+        Some(Details {
+            name: object.name.clone(),
+            catalogue_number: object.catalogue_number,
+            designator: object.designator.clone(),
+            kind: object.kind,
+            epoch: element_set.epoch().to_utc(),
+            element_age_days,
+            stale: element_age_days > STALE_AFTER_DAYS,
+            period_minutes: element_set.period_minutes(),
+            inclination_deg: element_set.inclination_deg(),
+            eccentricity: element_set.eccentricity(),
+            apogee_altitude_km: element_set.apogee_altitude_km(),
+            perigee_altitude_km: element_set.perigee_altitude_km(),
+            now: element_set.state(at).map(|state| Now {
+                over: geodetic(state.position_km),
+                speed_km_s: state.speed_km_s,
+            }),
+        })
+    }
+
+    /// The Orbit Path of one Tracked Object from the given moment, in Earth radii.
+    pub fn orbit_path(&self, index: usize, at: JulianDate) -> Vec<Vec3> {
+        self.objects.get(index).map_or_else(Vec::new, |object| {
+            object
+                .element_set
+                .orbit_path(at, PATH_SAMPLES)
+                .into_iter()
+                .map(to_earth_radii)
+                .collect()
+        })
+    }
+
+    /// The Ground Track of one Tracked Object for one revolution from the given moment,
+    /// as points just above the globe's surface, in Earth radii.
+    pub fn ground_track(&self, index: usize, at: JulianDate) -> Vec<Vec3> {
+        self.objects.get(index).map_or_else(Vec::new, |object| {
+            object
+                .element_set
+                .ground_path(at, PATH_SAMPLES)
+                .into_iter()
+                // The globe is drawn as a sphere, so "beneath" is towards its centre.
+                .map(|position_km| to_earth_radii(position_km).normalize() * GROUND_TRACK_RADIUS)
+                .collect()
+        })
     }
 
     /// The dots for the last propagated moment, in the same order as the Tracked Objects.
@@ -116,12 +229,13 @@ mod tests {
     }
 
     fn radius(instance: &Instance) -> f32 {
-        glam::Vec3::from_array(
-            bytemuck::cast::<_, [f32; 4]>(*instance)[..3]
-                .try_into()
-                .unwrap(),
-        )
-        .length()
+        instance.position().length()
+    }
+
+    fn station(tracked: &Tracked) -> usize {
+        tracked
+            .index_of(25_544)
+            .expect("the International Space Station is in the Snapshot")
     }
 
     #[test]
@@ -147,7 +261,7 @@ mod tests {
     #[test]
     fn nearly_every_object_has_a_position_above_the_surface() {
         let mut tracked = snapshot();
-        tracked.propagate(snapshot_moment());
+        tracked.propagate(snapshot_moment(), Highlight::default());
 
         let instances = tracked.instances();
         assert_eq!(instances.len(), tracked.objects.len());
@@ -166,7 +280,7 @@ mod tests {
     #[test]
     fn the_space_station_is_where_a_space_station_should_be() {
         let mut tracked = snapshot();
-        tracked.propagate(snapshot_moment());
+        tracked.propagate(snapshot_moment(), Highlight::default());
 
         let index = tracked
             .objects
@@ -180,8 +294,96 @@ mod tests {
         let altitude_km = (radius(station) as f64 - 1.0) * EARTH_EQUATORIAL_RADIUS_KM;
         assert!((370.0..460.0).contains(&altitude_km), "{altitude_km} km");
 
-        let [_, _, z, _] = bytemuck::cast::<_, [f32; 4]>(*station);
-        let latitude_deg = (z / radius(station)).asin().to_degrees();
+        let latitude_deg = (station.position().z / radius(station)).asin().to_degrees();
         assert!(latitude_deg.abs() < 51.8, "{latitude_deg} degrees");
+    }
+
+    #[test]
+    fn highlighted_objects_are_marked() {
+        let mut tracked = snapshot();
+        let index = station(&tracked);
+
+        tracked.propagate(snapshot_moment(), Highlight::default());
+        let plain = tracked.instances()[index];
+        let neighbour = tracked.instances()[index + 1];
+
+        let highlight = Highlight {
+            selected: Some(index),
+            hovered: None,
+        };
+        tracked.propagate(snapshot_moment(), highlight);
+        let selected = tracked.instances()[index];
+
+        assert_eq!(selected.position(), plain.position());
+        assert_ne!(selected, plain);
+        // No other dot changes.
+        assert_eq!(tracked.instances()[index + 1], neighbour);
+    }
+
+    #[test]
+    fn details_describe_the_space_station() {
+        let tracked = snapshot();
+        let details = tracked
+            .details(station(&tracked), snapshot_moment())
+            .expect("details");
+
+        assert!(details.name.contains("ISS"), "{}", details.name);
+        assert_eq!(details.catalogue_number, 25_544);
+        assert_eq!(details.designator, "1998-067A");
+        assert_eq!(details.kind, ObjectKind::Satellite);
+        assert!(!details.stale);
+        assert!(
+            (92.0..94.0).contains(&details.period_minutes),
+            "{details:?}"
+        );
+        assert!((details.inclination_deg - 51.6).abs() < 0.1, "{details:?}");
+        assert!(details.perigee_altitude_km <= details.apogee_altitude_km);
+
+        let now = details.now.expect("a Position");
+        assert!((370.0..460.0).contains(&now.over.altitude_km), "{now:?}");
+        // A low circular orbit is travelled at about 7.66 km/s.
+        assert!((now.speed_km_s - 7.66).abs() < 0.05, "{now:?}");
+    }
+
+    #[test]
+    fn element_sets_go_stale_after_thirty_days() {
+        let mut tracked = snapshot();
+        let index = station(&tracked);
+        let later = JulianDate(snapshot_moment().0 + 40.0);
+
+        assert!(tracked.details(index, later).expect("details").stale);
+
+        // A stale dot differs from a fresh one only in how it is marked.
+        tracked.propagate(later, Highlight::default());
+        let stale = tracked.instances()[index];
+        assert!(!stale.is_hidden());
+        let fresh = Instance::new(stale.position(), ObjectKind::Satellite, Marks::default());
+        assert_ne!(stale, fresh);
+    }
+
+    #[test]
+    fn paths_follow_the_orbit_and_the_ground() {
+        let tracked = snapshot();
+        let index = station(&tracked);
+
+        let orbit_path = tracked.orbit_path(index, snapshot_moment());
+        assert_eq!(orbit_path.len(), PATH_SAMPLES);
+        for point in &orbit_path {
+            let altitude_km = (point.length() as f64 - 1.0) * EARTH_EQUATORIAL_RADIUS_KM;
+            assert!((370.0..460.0).contains(&altitude_km), "{altitude_km} km");
+        }
+
+        let ground_track = tracked.ground_track(index, snapshot_moment());
+        assert_eq!(ground_track.len(), PATH_SAMPLES);
+        for point in &ground_track {
+            assert!((point.length() - GROUND_TRACK_RADIUS).abs() < 1e-5);
+        }
+        // Both start beneath the same spot.
+        assert!(
+            orbit_path[0]
+                .normalize()
+                .distance(ground_track[0].normalize())
+                < 1e-5
+        );
     }
 }

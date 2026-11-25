@@ -4,8 +4,11 @@ use orion_core::sun::SurfacePoint;
 
 use std::time::Duration;
 
+use orion_core::catalogue::ObjectKind;
+
 use crate::feed::{Origin, Refresh, Status};
 use crate::renderer::GpuInfo;
+use crate::tracked::Details;
 use crate::tracked::Summary;
 
 /// Everything the diagnostics panel reports for one frame.
@@ -50,6 +53,138 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
                 tracked.propagation_ms
             ));
         });
+}
+
+/// What the user asked for in the information panel this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectionActions {
+    pub clear: bool,
+}
+
+/// Draws the information panel for the selected Tracked Object.
+pub fn draw_selected(
+    ctx: &egui::Context,
+    details: &Details,
+    show_ground_track: &mut bool,
+) -> SelectionActions {
+    let mut actions = SelectionActions::default();
+    egui::Window::new(&details.name)
+        // The title changes with the selection; a fixed id keeps it one window.
+        .id(egui::Id::unique("selected"))
+        .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
+        .resizable(false)
+        .show(ctx, |ui| {
+            let row = |ui: &mut egui::Ui, label: &str, value: String| {
+                ui.label(label);
+                ui.label(value);
+                ui.end_row();
+            };
+
+            egui::Grid::new("identity").num_columns(2).show(ui, |ui| {
+                row(ui, "Catalogue number", details.catalogue_number.to_string());
+                row(ui, "Designator", details.designator.clone());
+                row(ui, "Kind", kind_name(details.kind).to_owned());
+            });
+
+            ui.separator();
+            match details.now {
+                Some(now) => {
+                    egui::Grid::new("now").num_columns(2).show(ui, |ui| {
+                        row(ui, "Latitude", format_latitude(now.over.latitude_deg));
+                        row(ui, "Longitude", format_longitude(now.over.longitude_deg));
+                        row(ui, "Altitude", format!("{:.0} km", now.over.altitude_km));
+                        row(ui, "Speed", format!("{:.2} km/s", now.speed_km_s));
+                    });
+                }
+                None => {
+                    ui.label("No Position can be computed for this moment.");
+                }
+            }
+
+            ui.separator();
+            egui::Grid::new("orbit").num_columns(2).show(ui, |ui| {
+                row(ui, "Period", format!("{:.1} min", details.period_minutes));
+                row(
+                    ui,
+                    "Inclination",
+                    format!("{:.1}°", details.inclination_deg),
+                );
+                row(
+                    ui,
+                    "Highest point",
+                    format!("{:.0} km", details.apogee_altitude_km),
+                );
+                row(
+                    ui,
+                    "Lowest point",
+                    format!("{:.0} km", details.perigee_altitude_km),
+                );
+                row(ui, "Eccentricity", format!("{:.4}", details.eccentricity));
+            });
+
+            ui.separator();
+            egui::Grid::new("element set")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    let epoch = details.epoch;
+                    row(
+                        ui,
+                        "Epoch",
+                        format!(
+                            "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+                            epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute
+                        ),
+                    );
+                    row(
+                        ui,
+                        "Element Age",
+                        format!("{:.1} days", details.element_age_days),
+                    );
+                });
+            if details.stale {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 190, 90),
+                    "This Element Set is old. The Position may be far off.",
+                );
+            }
+
+            ui.separator();
+            ui.checkbox(show_ground_track, "Show Ground Track");
+            actions.clear = ui.button("Clear selection").clicked();
+        });
+    actions
+}
+
+fn kind_name(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::Satellite => "Satellite",
+        ObjectKind::RocketBody => "Rocket Body",
+        ObjectKind::Debris => "Debris",
+    }
+}
+
+/// Draws a name next to each given point on screen, in logical points.
+pub fn draw_labels(ctx: &egui::Context, labels: &[(egui::Pos2, String)]) {
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let font = egui::FontId::proportional(13.0);
+    for (position, text) in labels {
+        let anchor = *position + egui::vec2(12.0, -8.0);
+        // A dark copy underneath keeps the name legible over bright ground.
+        painter.text(
+            anchor + egui::vec2(1.0, 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            text,
+            font.clone(),
+            egui::Color32::BLACK,
+        );
+        painter.text(
+            anchor,
+            egui::Align2::LEFT_BOTTOM,
+            text,
+            font.clone(),
+            egui::Color32::WHITE,
+        );
+    }
 }
 
 /// Draws the panel about where the Element Sets came from. Returns true if the user
@@ -108,13 +243,21 @@ fn format_duration(duration: Duration) -> String {
 
 /// Formats a place as, for example, `20.7° S, 94.1° E`.
 fn format_point(point: SurfacePoint) -> String {
-    let north_south = if point.latitude_deg >= 0.0 { 'N' } else { 'S' };
-    let east_west = if point.longitude_deg >= 0.0 { 'E' } else { 'W' };
     format!(
-        "{:.1}° {north_south}, {:.1}° {east_west}",
-        point.latitude_deg.abs(),
-        point.longitude_deg.abs()
+        "{}, {}",
+        format_latitude(point.latitude_deg),
+        format_longitude(point.longitude_deg)
     )
+}
+
+fn format_latitude(degrees: f64) -> String {
+    let hemisphere = if degrees >= 0.0 { 'N' } else { 'S' };
+    format!("{:.1}° {hemisphere}", degrees.abs())
+}
+
+fn format_longitude(degrees: f64) -> String {
+    let hemisphere = if degrees >= 0.0 { 'E' } else { 'W' };
+    format!("{:.1}° {hemisphere}", degrees.abs())
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::EARTH_EQUATORIAL_RADIUS_KM;
 use crate::frames::inertial_to_earth_fixed;
 use crate::time::JulianDate;
 
@@ -18,7 +19,22 @@ pub enum ObjectKind {
 pub struct ElementSet {
     epoch: JulianDate,
     constants: sgp4::Constants,
+    mean_motion_rev_per_day: f64,
+    eccentricity: f64,
+    inclination_deg: f64,
 }
+
+/// Where a Tracked Object is and how fast it is moving at one moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct State {
+    /// Position in kilometres in the Earth-fixed frame.
+    pub position_km: [f64; 3],
+    /// Speed in kilometres per second relative to the stars, not to the ground.
+    pub speed_km_s: f64,
+}
+
+/// Earth's gravitational parameter in km^3/s^2 (WGS 84).
+const EARTH_GM: f64 = 398_600.441_8;
 
 impl ElementSet {
     fn from_sgp4(elements: &sgp4::Elements) -> Result<Self, sgp4::ElementsError> {
@@ -26,7 +42,42 @@ impl ElementSet {
             // `epoch()` is in Julian years of 365.25 days since J2000.
             epoch: JulianDate(JulianDate::J2000.0 + elements.epoch() * 365.25),
             constants: sgp4::Constants::from_elements(elements)?,
+            mean_motion_rev_per_day: elements.mean_motion,
+            eccentricity: elements.eccentricity,
+            inclination_deg: elements.inclination,
         })
+    }
+
+    /// Time to complete one revolution, in minutes.
+    pub fn period_minutes(&self) -> f64 {
+        1_440.0 / self.mean_motion_rev_per_day
+    }
+
+    /// How far the orbit departs from a circle: 0 is circular, values near 1 are very elongated.
+    pub fn eccentricity(&self) -> f64 {
+        self.eccentricity
+    }
+
+    /// Tilt of the orbit relative to the equator, in degrees. Above 90 the object
+    /// travels against Earth's rotation.
+    pub fn inclination_deg(&self) -> f64 {
+        self.inclination_deg
+    }
+
+    /// Half the long axis of the orbit, in kilometres, from Kepler's third law.
+    fn semi_major_axis_km(&self) -> f64 {
+        let radians_per_second = self.mean_motion_rev_per_day * std::f64::consts::TAU / 86_400.0;
+        (EARTH_GM / (radians_per_second * radians_per_second)).cbrt()
+    }
+
+    /// Approximate height above the equatorial radius at the orbit's highest point.
+    pub fn apogee_altitude_km(&self) -> f64 {
+        self.semi_major_axis_km() * (1.0 + self.eccentricity) - EARTH_EQUATORIAL_RADIUS_KM
+    }
+
+    /// Approximate height above the equatorial radius at the orbit's lowest point.
+    pub fn perigee_altitude_km(&self) -> f64 {
+        self.semi_major_axis_km() * (1.0 - self.eccentricity) - EARTH_EQUATORIAL_RADIUS_KM
     }
 
     /// The moment this Element Set describes.
@@ -46,15 +97,67 @@ impl ElementSet {
             .map(|position| inertial_to_earth_fixed(position, at))
     }
 
+    /// Position and speed at the given moment, or `None` if the orbit model cannot produce them.
+    pub fn state(&self, at: JulianDate) -> Option<State> {
+        let prediction = self.predict(at)?;
+        let [vx, vy, vz] = prediction.velocity;
+        Some(State {
+            position_km: inertial_to_earth_fixed(prediction.position, at),
+            speed_km_s: (vx * vx + vy * vy + vz * vz).sqrt(),
+        })
+    }
+
+    /// The Orbit Path: `samples` points along one revolution starting at `at`, in
+    /// kilometres in the Earth-fixed frame as it stands at `at`.
+    ///
+    /// The orbit is a closed curve against the stars, so every point is turned by the
+    /// same angle. The result is the ring the object is travelling along right now;
+    /// Earth turns beneath it. Points the model cannot produce are left out.
+    pub fn orbit_path(&self, at: JulianDate, samples: usize) -> Vec<[f64; 3]> {
+        self.sample_revolution(at, samples)
+            .filter_map(|moment| self.position_inertial(moment))
+            .map(|position| inertial_to_earth_fixed(position, at))
+            .collect()
+    }
+
+    /// The path over the ground for one revolution starting at `at`: `samples`
+    /// positions in kilometres in the Earth-fixed frame, each at its own moment.
+    /// The Ground Track is the line on the surface beneath them.
+    pub fn ground_path(&self, at: JulianDate, samples: usize) -> Vec<[f64; 3]> {
+        self.sample_revolution(at, samples)
+            .filter_map(|moment| self.position(moment))
+            .collect()
+    }
+
+    /// `samples` evenly spaced moments covering one revolution from `at`, ends included.
+    fn sample_revolution(
+        &self,
+        at: JulianDate,
+        samples: usize,
+    ) -> impl Iterator<Item = JulianDate> {
+        let period_days = self.period_minutes() / 1_440.0;
+        let steps = samples.saturating_sub(1).max(1) as f64;
+        (0..samples).map(move |sample| JulianDate(at.0 + period_days * sample as f64 / steps))
+    }
+
     /// Position in kilometres in the inertial frame. SGP4's own frame differs from the
     /// one described in the crate documentation by under 0.01 degrees, which is ignored.
     fn position_inertial(&self, at: JulianDate) -> Option<[f64; 3]> {
+        self.predict(at).map(|prediction| prediction.position)
+    }
+
+    fn predict(&self, at: JulianDate) -> Option<sgp4::Prediction> {
         let minutes = (at.0 - self.epoch.0) * 1_440.0;
         self.constants
             .propagate(sgp4::MinutesSinceEpoch(minutes))
             .ok()
-            .map(|prediction| prediction.position)
-            .filter(|position| position.iter().all(|component| component.is_finite()))
+            .filter(|prediction| {
+                prediction
+                    .position
+                    .iter()
+                    .chain(&prediction.velocity)
+                    .all(|component| component.is_finite())
+            })
     }
 }
 
@@ -222,6 +325,76 @@ mod tests {
                 "{radius} km after {hours} h"
             );
         }
+    }
+
+    #[test]
+    fn orbit_figures_match_a_geostationary_orbit() {
+        // One revolution per sidereal day in a circle is the geostationary orbit:
+        // a period of 1,436 minutes at 35,786 km.
+        let row = CALSPHERE
+            .replace(",13.76776729,", ",1.00273791,")
+            .replace(",.00275414,", ",0.0,");
+        let parsed = parse(&[&row]);
+        let element_set = &parsed.objects[0].element_set;
+
+        assert!((element_set.period_minutes() - 1_436.07).abs() < 0.01);
+        assert!((element_set.apogee_altitude_km() - 35_786.0).abs() < 5.0);
+        assert!((element_set.perigee_altitude_km() - 35_786.0).abs() < 5.0);
+        assert_eq!(element_set.eccentricity(), 0.0);
+        assert_eq!(element_set.inclination_deg(), 90.2245);
+    }
+
+    #[test]
+    fn speed_matches_a_circular_orbit_at_that_height() {
+        // A circular orbit of radius 7,353.5 km is travelled at sqrt(GM / r) = 7.36 km/s.
+        let parsed = parse(&[CALSPHERE]);
+        let element_set = &parsed.objects[0].element_set;
+        let state = element_set.state(element_set.epoch()).expect("a state");
+        assert!((state.speed_km_s - 7.36).abs() < 0.05, "{state:?}");
+        assert_eq!(
+            Some(state.position_km),
+            element_set.position(element_set.epoch())
+        );
+    }
+
+    #[test]
+    fn orbit_path_is_a_closed_ring_through_the_current_position() {
+        let parsed = parse(&[CALSPHERE]);
+        let element_set = &parsed.objects[0].element_set;
+        let at = JulianDate(element_set.epoch().0 + 0.3);
+
+        let path = element_set.orbit_path(at, 181);
+        assert_eq!(path.len(), 181);
+        assert_eq!(Some(path[0]), element_set.position(at));
+
+        // After one revolution the object is back where it started, give or take the
+        // slow drift of the orbit itself.
+        let gap = distance_from_centre([
+            path[180][0] - path[0][0],
+            path[180][1] - path[0][1],
+            path[180][2] - path[0][2],
+        ]);
+        assert!(gap < 60.0, "{gap} km between the ends");
+        for point in &path {
+            let altitude = distance_from_centre(*point) - EARTH_EQUATORIAL_RADIUS_KM;
+            assert!((930.0..1_020.0).contains(&altitude), "{altitude} km");
+        }
+    }
+
+    #[test]
+    fn ground_path_slips_west_as_earth_turns() {
+        // This orbit passes over the poles and takes 104.6 minutes. In that time Earth
+        // turns 26.2 degrees east, so the next pass crosses the same latitude that far west.
+        let parsed = parse(&[CALSPHERE]);
+        let element_set = &parsed.objects[0].element_set;
+        let at = JulianDate(element_set.epoch().0 + 0.3);
+
+        let path = element_set.ground_path(at, 181);
+        assert_eq!(Some(path[0]), element_set.position(at));
+
+        let longitude = |point: [f64; 3]| point[1].atan2(point[0]).to_degrees();
+        let slip = (longitude(path[180]) - longitude(path[0]) + 540.0).rem_euclid(360.0) - 180.0;
+        assert!((slip + 26.2).abs() < 0.5, "slipped {slip} degrees");
     }
 
     #[test]

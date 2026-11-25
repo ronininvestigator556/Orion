@@ -5,6 +5,17 @@
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct JulianDate(pub f64);
 
+/// A Gregorian calendar date and time of day in UTC.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CalendarTime {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: f64,
+}
+
 impl JulianDate {
     /// 1 January 2000, 12:00, the reference moment for most astronomical formulas.
     pub const J2000: Self = Self(2_451_545.0);
@@ -29,6 +40,35 @@ impl JulianDate {
         let day_fraction =
             (hour as f64 - 12.0) / 24.0 + minute as f64 / 1_440.0 + second / 86_400.0;
         Self(day_number as f64 + day_fraction)
+    }
+
+    /// The Gregorian calendar date and time of day of this moment, in UTC.
+    pub fn to_utc(self) -> CalendarTime {
+        // Shift by half a day so whole numbers fall at midnight, then split.
+        let shifted = self.0 + 0.5;
+        let day_number = shifted.floor();
+        let seconds_of_day = (shifted - day_number) * 86_400.0;
+
+        // Richards' algorithm for turning a day count into a Gregorian date.
+        let j = day_number as i64;
+        let f = j + 1401 + (((4 * j + 274_277) / 146_097) * 3) / 4 - 38;
+        let e = 4 * f + 3;
+        let g = (e % 1461) / 4;
+        let h = 5 * g + 2;
+        let day = (h % 153) / 5 + 1;
+        let month = (h / 153 + 2) % 12 + 1;
+        let year = e / 1461 - 4716 + (14 - month) / 12;
+
+        let hour = (seconds_of_day / 3_600.0).floor();
+        let minute = ((seconds_of_day - hour * 3_600.0) / 60.0).floor();
+        CalendarTime {
+            year: year as i32,
+            month: month as u32,
+            day: day as u32,
+            hour: hour as u32,
+            minute: minute as u32,
+            second: seconds_of_day - hour * 3_600.0 - minute * 60.0,
+        }
     }
 
     pub fn days_since_j2000(self) -> f64 {
@@ -63,6 +103,31 @@ mod tests {
         // Leap day, and a date after it in the same year.
         assert_eq!(JulianDate::from_utc(2024, 2, 29, 0, 0, 0.0).0, 2_460_369.5);
         assert_eq!(JulianDate::from_utc(2024, 3, 1, 0, 0, 0.0).0, 2_460_370.5);
+    }
+
+    #[test]
+    fn julian_dates_convert_back_to_calendar_dates() {
+        for (year, month, day, hour, minute) in [
+            (2000, 1, 1, 12, 0),
+            (1970, 1, 1, 0, 0),
+            (2024, 2, 29, 23, 59),
+            (2024, 3, 1, 0, 0),
+            (2026, 11, 24, 19, 13),
+            (2026, 12, 31, 6, 30),
+        ] {
+            let calendar = JulianDate::from_utc(year, month, day, hour, minute, 30.0).to_utc();
+            assert_eq!(
+                (
+                    calendar.year,
+                    calendar.month,
+                    calendar.day,
+                    calendar.hour,
+                    calendar.minute
+                ),
+                (year, month, day, hour, minute)
+            );
+            assert!((calendar.second - 30.0).abs() < 1e-3, "{calendar:?}");
+        }
     }
 
     #[test]

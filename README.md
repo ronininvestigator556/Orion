@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details and Orbit Path, and optionally its Ground Track. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Run it
 
@@ -10,6 +10,12 @@ Requires a recent stable Rust toolchain (1.95 or newer) and a GPU with Metal, Vu
 
 ```bash
 cargo run
+```
+
+To start with a Tracked Object already selected, pass its catalogue number. This selects the International Space Station and shows its Ground Track:
+
+```bash
+cargo run -- --select 25544 --ground-track
 ```
 
 ## Layout
