@@ -8,10 +8,13 @@ Orion is growing from a satellite tracker into a layered map of public informati
 
 **Amended 2026-11-25.** The rule first spoke only of places and vehicles. Orion is to show protests, riots and strikes so that a traveller can keep clear of them, and those are neither: they are events made of people. We decided the rule covers events too, at the level of the crowd and never of the person. An Unrest Report shows where, when, what kind, and a link to the reports behind it.
 
+**Amended again 2026-11-25**, for armed conflict. Who is fighting whom is the substance of a war, so a conflict shows its parties, the states and armed groups, as a curated Source names them, with the death tolls that Source estimates. That is a different matter from the protests above, whose news-derived Source guesses at organisations and often guesses wrong.
+
 ## Consequences
 
 - Any Feature can be selected and shows what its source publishes about it. That is the limit.
 - No watchlists of people, no lookups from a vehicle to its owner as a private individual, and no merging of sources to build a profile of a person.
 - An event shows nothing about the individuals in it: no participants' or organisers' names, no photographs, no social media posts, even where a Source publishes them.
 - Orion does not follow a person from one event to the next, or keep a history of one.
+- Nor does it follow a particular military unit, ship or aircraft as it moves. Military activity is shown where its own government publishes it as a warning to others, such as a sea area closed for missile firing. An aircraft that broadcasts its position appears among the flights like any other, and nothing singles it out.
 - A request for such a feature is out of scope for this project, not a prioritisation question.
