@@ -35,6 +35,8 @@ pub enum FetchError {
     NotElementSets,
     /// The Source answered, but not with a catalogue file.
     NotCatalogueRecords,
+    /// The Source answered, but not with the list of moments it holds a picture for.
+    NotPictureTimes,
 }
 
 impl fmt::Display for FetchError {
@@ -51,6 +53,9 @@ impl fmt::Display for FetchError {
             Self::NotElementSets => write!(f, "the source did not return Element Sets"),
             Self::NotCatalogueRecords => {
                 write!(f, "the source did not return Catalogue Records")
+            }
+            Self::NotPictureTimes => {
+                write!(f, "the source did not say which pictures it holds")
             }
         }
     }

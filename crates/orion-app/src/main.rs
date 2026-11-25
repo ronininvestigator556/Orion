@@ -447,8 +447,22 @@ impl Session {
                 Arc::clone(&fetcher),
             )));
         }
+        // Pictures made many times a day are found by asking their Source which it holds.
+        let picture_source = orion_data::tiles::TileSource::new();
+        let picture_cache = layer_cache.as_ref().map(Cache::tiles);
+        let find: picture_layer::FindPicture = Arc::new(move |tiles, moment| {
+            orion_data::tiles::newest_picture(
+                &picture_source,
+                picture_cache.as_ref(),
+                tiles,
+                moment,
+            )
+        });
         for spec in picture_layer::ALL {
-            layers.add(Box::new(picture_layer::PictureLayer::new(spec)));
+            layers.add(Box::new(picture_layer::PictureLayer::new(
+                spec,
+                Arc::clone(&find),
+            )));
         }
         // Put back what was switched on last time, then what this launch asks for.
         let remembered = settings_file

@@ -3,12 +3,19 @@
 //!
 //! Such a Layer has no Features. It follows the Simulation Clock: move the clock back
 //! and the picture is the one from then, as far back as the Source keeps them.
+//!
+//! A picture made every ten minutes is published when its Source gets to it: an hour
+//! later or two, not always in order, and now and then never. So the Layer does not
+//! reckon which picture is the newest. It asks.
 
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
-use orion_data::tiles::{self, TileLayer};
+use orion_data::FetchError;
+use orion_data::tiles::{self, TileLayer, picture_time};
 
 use crate::basemap::Picture;
 use crate::layer::{Highlight, Layer, LayerStatus};
@@ -22,15 +29,29 @@ const MINUTE: f64 = 1.0 / 1_440.0;
 /// the Simulation Clock running fast the moment changes many times a second, and
 /// asking the Source for each one would be a flood of requests for pictures nobody sees.
 const SETTLE: Duration = Duration::from_millis(1200);
+/// How long after a failed search for a picture the Source is asked again.
+const RETRY: Duration = Duration::from_secs(60);
+/// How long after finding only an older picture than the one wanted the Source is
+/// asked whether the newer one has been published since.
+const RECHECK: Duration = Duration::from_secs(180);
+/// How close to the present the moment wanted must be for a newer picture to be
+/// worth asking after again, in days. Further back, what is held will not change.
+const RECENT_DAYS: f64 = 0.25;
 
-/// How often a picture is made, and how long after the fact it is published.
+/// How often a picture is made, and how its latest one is known.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Step {
     /// One a day, published this many days later.
     Daily { lag_days: f64 },
-    /// One every ten minutes, published this many minutes later.
-    TenMinutes { lag_minutes: f64 },
+    /// One every ten minutes, published when the Source gets to it: the Source is
+    /// asked which it holds.
+    TenMinutes,
 }
+
+/// Finds the newest picture made no later than a moment that its Source really
+/// serves; `Ok(None)` if it holds none near then. Called off the main thread.
+pub type FindPicture =
+    Arc<dyn Fn(&TileLayer, JulianDate) -> Result<Option<JulianDate>, FetchError> + Send + Sync>;
 
 /// Everything that makes one picture Layer different from another.
 pub struct PictureSpec {
@@ -48,9 +69,11 @@ pub struct PictureSpec {
     pub swatch: [u8; 3],
 }
 
-/// The moment whose picture is shown when the Simulation Clock is at `at`: the clock's
-/// own moment, or the latest one published if the clock is ahead of that, rounded
-/// down to when a picture was made. Returned with the way the Source writes it.
+/// The moment whose picture is wanted when the Simulation Clock is at `at`: the clock's
+/// own moment, or the present if the clock is ahead of it, rounded down to when a
+/// picture was made. For a daily picture, which is published a known while later,
+/// that is the picture shown; for one made every ten minutes it is where the search
+/// for a picture the Source holds starts. Returned with the way the Source writes it.
 pub fn picture_moment(step: Step, at: JulianDate, real_now: JulianDate) -> (JulianDate, String) {
     match step {
         Step::Daily { lag_days } => {
@@ -62,20 +85,14 @@ pub fn picture_moment(step: Step, at: JulianDate, real_now: JulianDate) -> (Juli
                 format!("{:04}-{:02}-{:02}", day.year, day.month, day.day),
             )
         }
-        Step::TenMinutes { lag_minutes } => {
+        Step::TenMinutes => {
             // A second's grace, so a moment on the mark is not rounded down past it.
-            let moment = JulianDate(at.0.min(real_now.0 - lag_minutes * MINUTE) + MINUTE / 60.0);
+            let moment = JulianDate(at.0.min(real_now.0) + MINUTE / 60.0);
             let time = moment.to_utc();
             let minute = time.minute / 10 * 10;
             let start =
                 JulianDate::from_utc(time.year, time.month, time.day, time.hour, minute, 0.0);
-            (
-                start,
-                format!(
-                    "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
-                    time.year, time.month, time.day, time.hour, minute
-                ),
-            )
+            (start, picture_time(start))
         }
     }
 }
@@ -87,34 +104,157 @@ pub struct PictureLayer {
     showing: Option<String>,
     /// The moment the Simulation Clock calls for, and since when it has.
     wanted: Option<(String, Instant)>,
+    find: FindPicture,
+    /// The search for a picture under way, if one is.
+    search: Option<Search>,
+    /// How the last search ended.
+    answer: Option<Answer>,
+}
+
+/// A search for the newest picture the Source holds from no later than `moment`.
+struct Search {
+    wanted: String,
+    moment: JulianDate,
+    result: Receiver<Result<Option<JulianDate>, FetchError>>,
+}
+
+/// How a search ended, and when.
+struct Answer {
+    /// The moment the search was for, as the Source writes it.
+    wanted: String,
+    at: Instant,
+    outcome: Outcome,
+}
+
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    /// The picture for the very moment wanted.
+    Found,
+    /// An older picture: the one wanted is not held, or not yet.
+    FoundOlder,
+    /// The Source holds no picture from near the moment wanted.
+    Nothing,
+    Failed(String),
 }
 
 impl PictureLayer {
-    /// A Layer that is off.
-    pub fn new(spec: &'static PictureSpec) -> Self {
+    /// A Layer that is off. `find` is how it learns which pictures its Source holds.
+    pub fn new(spec: &'static PictureSpec, find: FindPicture) -> Self {
         Self {
             spec,
             on: false,
             showing: None,
             wanted: None,
+            find,
+            search: None,
+            answer: None,
         }
     }
 
     /// Notes the moment the Simulation Clock calls for, and shows its picture once
-    /// the clock has called for it long enough. The first picture is shown at once.
+    /// the clock has called for it long enough. The first moment is acted on at once.
     fn show(&mut self, at: JulianDate, real_now: JulianDate, now: Instant) {
-        let (_, written) = picture_moment(self.spec.step, at, real_now);
-        if self.showing.is_none() {
-            self.showing = Some(written.clone());
-        }
-        match &self.wanted {
-            Some((wanted, since)) if *wanted == written => {
-                if now.duration_since(*since) >= SETTLE {
+        let (moment, written) = picture_moment(self.spec.step, at, real_now);
+        let settled = match &self.wanted {
+            Some((wanted, since)) if *wanted == written => now.duration_since(*since) >= SETTLE,
+            Some(_) => {
+                self.wanted = Some((written.clone(), now));
+                false
+            }
+            None => {
+                self.wanted = Some((written.clone(), now));
+                true
+            }
+        };
+        match self.spec.step {
+            Step::Daily { .. } => {
+                if settled {
                     self.showing = Some(written);
                 }
             }
-            _ => self.wanted = Some((written, now)),
+            Step::TenMinutes => {
+                self.take_answer(now);
+                if settled
+                    && self.search.is_none()
+                    && self.should_ask(&written, moment, real_now, now)
+                {
+                    self.ask(written, moment);
+                }
+            }
         }
+    }
+
+    /// Takes in the answer to the search under way, if it has arrived.
+    fn take_answer(&mut self, now: Instant) {
+        let Some(search) = &self.search else { return };
+        let outcome = match search.result.try_recv() {
+            Ok(Ok(Some(found))) => {
+                self.showing = Some(picture_time(found));
+                if found.0 + MINUTE / 2.0 >= search.moment.0 {
+                    Outcome::Found
+                } else {
+                    Outcome::FoundOlder
+                }
+            }
+            Ok(Ok(None)) => {
+                // Whatever was on show is from some other moment, and would mislead.
+                self.showing = None;
+                Outcome::Nothing
+            }
+            // A picture already on show stays: it is the best there is to see.
+            Ok(Err(error)) => {
+                log::warn!("finding a picture for {}: {error}", self.spec.name);
+                Outcome::Failed(error.to_string())
+            }
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Outcome::Failed("the search stopped".to_owned()),
+        };
+        self.answer = Some(Answer {
+            wanted: search.wanted.clone(),
+            at: now,
+            outcome,
+        });
+        self.search = None;
+    }
+
+    /// Whether the Source should be asked for the picture of the moment wanted: it has
+    /// not been asked, or what it said may have changed since.
+    fn should_ask(
+        &self,
+        wanted: &str,
+        moment: JulianDate,
+        real_now: JulianDate,
+        now: Instant,
+    ) -> bool {
+        let Some(answer) = &self.answer else {
+            return true;
+        };
+        if answer.wanted != wanted {
+            return true;
+        }
+        let since = now.duration_since(answer.at);
+        let recent = real_now.0 - moment.0 < RECENT_DAYS;
+        match answer.outcome {
+            Outcome::Found => false,
+            Outcome::FoundOlder | Outcome::Nothing => recent && since >= RECHECK,
+            Outcome::Failed(_) => since >= RETRY,
+        }
+    }
+
+    /// Starts a search, off the main thread, for the picture of the moment wanted.
+    fn ask(&mut self, wanted: String, moment: JulianDate) {
+        let (sender, result) = mpsc::channel();
+        let find = Arc::clone(&self.find);
+        let tiles = self.spec.tiles.clone();
+        std::thread::spawn(move || {
+            // The Layer may have been switched off meanwhile, which is no matter.
+            let _ = sender.send(find(&tiles, moment));
+        });
+        self.search = Some(Search {
+            wanted,
+            moment,
+            result,
+        });
     }
 }
 
@@ -150,6 +290,8 @@ impl Layer for PictureLayer {
         if !on {
             self.showing = None;
             self.wanted = None;
+            self.search = None;
+            self.answer = None;
         }
     }
 
@@ -170,12 +312,28 @@ impl Layer for PictureLayer {
     }
 
     fn status(&self, _now: SystemTime) -> LayerStatus {
-        let mut text = match &self.showing {
-            Some(moment) => {
+        let outcome = self.answer.as_ref().map(|answer| &answer.outcome);
+        let mut text = match (&self.showing, outcome) {
+            (Some(moment), outcome) => {
                 let moment = moment.replace('T', " ").replace(":00Z", " UTC");
-                format!("From {SOURCE}. Showing the picture for {moment}.")
+                let mut text = format!("From {SOURCE}. Showing the picture for {moment}");
+                text.push_str(match outcome {
+                    Some(Outcome::FoundOlder) => ", the newest it holds.",
+                    Some(Outcome::Failed(_)) => "; asking for a newer one failed.",
+                    _ => ".",
+                });
+                text
             }
-            None => format!("From {SOURCE}."),
+            (None, Some(Outcome::Nothing)) => {
+                format!("From {SOURCE}, which holds no picture from near this moment.")
+            }
+            (None, Some(Outcome::Failed(error))) => {
+                format!("From {SOURCE}, but finding its picture failed: {error}.")
+            }
+            (None, _) if self.on && self.spec.step == Step::TenMinutes => {
+                format!("From {SOURCE}. Asking which pictures it holds.")
+            }
+            (None, _) => format!("From {SOURCE}."),
         };
         text.push(' ');
         text.push_str(self.spec.note);
@@ -192,7 +350,10 @@ impl Layer for PictureLayer {
     }
 
     fn update(&mut self, at: JulianDate, _highlight: Highlight) {
-        self.show(at, real_now(), Instant::now());
+        // A Layer that is off asks its Source nothing.
+        if self.on {
+            self.show(at, real_now(), Instant::now());
+        }
     }
 
     fn dots(&self) -> &[Instance] {
@@ -227,8 +388,9 @@ impl Layer for PictureLayer {
     }
 }
 
-const GEOSTATIONARY_NOTE: &str = "A new picture every ten minutes, about three quarters of an \
-     hour after it is taken. It covers the side of Earth its satellite faces.";
+const GEOSTATIONARY_NOTE: &str = "A new picture every ten minutes, published an hour or two \
+     after it is taken and now and then not at all. It covers the side of Earth its \
+     satellite faces.";
 
 /// The day's view of the whole Earth, clouds and all.
 pub static DAILY_TRUE_COLOUR: PictureSpec = PictureSpec {
@@ -246,7 +408,7 @@ pub static DAILY_TRUE_COLOUR: PictureSpec = PictureSpec {
 pub static GOES_EAST: PictureSpec = PictureSpec {
     name: "Weather satellite: Americas",
     tiles: tiles::GOES_EAST,
-    step: Step::TenMinutes { lag_minutes: 45.0 },
+    step: Step::TenMinutes,
     kept_days: 2.5,
     opacity: 0.92,
     black_is_empty: true,
@@ -257,7 +419,7 @@ pub static GOES_EAST: PictureSpec = PictureSpec {
 pub static GOES_WEST: PictureSpec = PictureSpec {
     name: "Weather satellite: Pacific",
     tiles: tiles::GOES_WEST,
-    step: Step::TenMinutes { lag_minutes: 45.0 },
+    step: Step::TenMinutes,
     kept_days: 2.5,
     opacity: 0.92,
     black_is_empty: true,
@@ -268,12 +430,12 @@ pub static GOES_WEST: PictureSpec = PictureSpec {
 pub static HIMAWARI: PictureSpec = PictureSpec {
     name: "Weather satellite: Asia",
     tiles: tiles::HIMAWARI,
-    step: Step::TenMinutes { lag_minutes: 45.0 },
-    kept_days: 0.15,
+    step: Step::TenMinutes,
+    kept_days: 2.5,
     opacity: 0.85,
     black_is_empty: false,
     note: "In infrared, where the coldest and so highest cloud tops are brightest. A \
-           new picture every ten minutes; only the last few hours are kept.",
+           new picture every ten minutes, published about an hour after it is taken.",
     swatch: [144, 164, 174],
 };
 
@@ -312,10 +474,45 @@ pub static ALL: [&PictureSpec; 6] = [
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     fn at(day: u32, hour: u32, minute: u32) -> JulianDate {
         JulianDate::from_utc(2026, 11, day, hour, minute, 0.0)
+    }
+
+    /// A Source that holds the picture for every moment asked about.
+    fn holding_everything() -> FindPicture {
+        Arc::new(|_, moment| Ok(Some(moment)))
+    }
+
+    /// A Source whose newest picture is the one from `newest`, counting how often it
+    /// is asked.
+    fn holding_up_to(newest: JulianDate) -> (FindPicture, Arc<AtomicUsize>) {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
+        let find: FindPicture = Arc::new(move |_, moment: JulianDate| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(JulianDate(moment.0.min(newest.0))))
+        });
+        (find, asked)
+    }
+
+    /// Calls for the same moment until the search under way has been answered.
+    fn answered(layer: &mut PictureLayer, clock: JulianDate, real: JulianDate, now: Instant) {
+        for _ in 0..400 {
+            layer.show(clock, real, now);
+            if layer.search.is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the search was never answered");
+    }
+
+    fn showing(layer: &PictureLayer) -> Option<&str> {
+        layer.showing.as_deref()
     }
 
     #[test]
@@ -334,14 +531,15 @@ mod tests {
     }
 
     #[test]
-    fn a_ten_minute_picture_is_rounded_down_to_when_one_was_made() {
-        let step = Step::TenMinutes { lag_minutes: 45.0 };
+    fn a_ten_minute_picture_is_wanted_for_the_mark_before_the_clock() {
+        let step = Step::TenMinutes;
         let now = at(25, 11, 3);
-        // 45 minutes before 11:03 is 10:18, and the picture before that is 10:10's.
+        // Live, the search starts from the present: nothing is reckoned about how
+        // late the Source publishes.
         let (moment, written) = picture_moment(step, now, now);
-        assert_eq!(written, "2026-11-25T10:10:00Z");
-        assert!((moment.0 - at(25, 10, 10).0).abs() < 1e-9);
-        // The clock moved back to a moment on the mark shows that very picture.
+        assert_eq!(written, "2026-11-25T11:00:00Z");
+        assert!((moment.0 - at(25, 11, 0).0).abs() < 1e-9);
+        // The clock moved back to a moment on the mark wants that very picture.
         assert_eq!(
             picture_moment(step, at(24, 6, 50), now).1,
             "2026-11-24T06:50:00Z"
@@ -350,15 +548,20 @@ mod tests {
             picture_moment(step, at(24, 23, 59), now).1,
             "2026-11-24T23:50:00Z"
         );
+        // Moved ahead of the present, it wants the present's.
+        assert_eq!(
+            picture_moment(step, at(27, 0, 0), now).1,
+            "2026-11-25T11:00:00Z"
+        );
     }
 
     #[test]
     fn the_layer_asks_for_its_picture_at_the_moment_on_show() {
-        let mut layer = PictureLayer::new(&GOES_EAST);
+        let mut layer = PictureLayer::new(&GOES_EAST, holding_everything());
         assert_eq!(layer.picture(), None);
         assert!(!layer.has_features());
         layer.set_on(true);
-        layer.show(at(24, 6, 55), at(25, 11, 0), Instant::now());
+        answered(&mut layer, at(24, 6, 55), at(25, 11, 0), Instant::now());
         let Some(Picture::Overlay { tiles, opacity, .. }) = layer.picture() else {
             panic!("no picture");
         };
@@ -376,18 +579,166 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_published_late_is_stood_in_for_by_the_newest_one_held() {
+        // At 16:40 the Source's newest picture is 15:10's, as it was on the afternoon
+        // the Layer was first tried by hand and showed nothing.
+        let (find, asked) = holding_up_to(at(25, 15, 10));
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
+        layer.set_on(true);
+        let real = at(25, 16, 40);
+        let start = Instant::now();
+
+        // Until the Source has answered there is nothing to show, and it says why.
+        layer.show(real, real, start);
+        if layer.search.is_some() {
+            assert_eq!(layer.picture(), None);
+            let status = layer.status(SystemTime::now()).text;
+            assert!(
+                status.contains("Asking which pictures it holds."),
+                "{status}"
+            );
+        }
+
+        answered(&mut layer, real, real, start);
+        assert_eq!(showing(&layer), Some("2026-11-25T15:10:00Z"));
+        let status = layer.status(SystemTime::now()).text;
+        assert!(
+            status.contains("Showing the picture for 2026-11-25 15:10 UTC, the newest it holds."),
+            "{status}"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+        // It is not asked again every frame, only after a while, in case the picture
+        // wanted has been published since.
+        answered(&mut layer, real, real, start + Duration::from_secs(100));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        answered(
+            &mut layer,
+            real,
+            real,
+            start + RECHECK + Duration::from_secs(1),
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_picture_found_for_the_very_moment_wanted_is_not_asked_after_again() {
+        let (find, asked) = holding_up_to(at(25, 15, 10));
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
+        layer.set_on(true);
+        let real = at(25, 16, 40);
+        let start = Instant::now();
+
+        // The clock moved back to yesterday: that picture is held and will stay so.
+        answered(&mut layer, at(24, 9, 0), real, start);
+        assert_eq!(showing(&layer), Some("2026-11-24T09:00:00Z"));
+        answered(
+            &mut layer,
+            at(24, 9, 0),
+            real,
+            start + Duration::from_secs(3600),
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_source_holding_nothing_near_the_moment_shows_nothing_and_says_so() {
+        let mut layer = PictureLayer::new(&GOES_EAST, Arc::new(|_, _| Ok(None)));
+        layer.set_on(true);
+        let real = at(25, 16, 40);
+        answered(&mut layer, real, real, Instant::now());
+        assert_eq!(layer.picture(), None);
+        let status = layer.status(SystemTime::now()).text;
+        assert!(
+            status.contains("holds no picture from near this moment"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn a_failed_search_says_so_keeps_the_picture_on_show_and_is_tried_again() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&asked);
+        // The first search finds its picture; every one after fails.
+        let find: FindPicture = Arc::new(move |_, moment| {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(Some(moment))
+            } else {
+                Err(FetchError::Refused(503))
+            }
+        });
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
+        layer.set_on(true);
+        let real = at(25, 16, 40);
+        let start = Instant::now();
+        answered(&mut layer, at(25, 9, 0), real, start);
+        assert_eq!(showing(&layer), Some("2026-11-25T09:00:00Z"));
+
+        // The clock moves on to a moment whose search fails.
+        layer.show(at(25, 12, 0), real, start + Duration::from_secs(10));
+        answered(
+            &mut layer,
+            at(25, 12, 0),
+            real,
+            start + Duration::from_secs(12),
+        );
+        assert_eq!(showing(&layer), Some("2026-11-25T09:00:00Z"));
+        let status = layer.status(SystemTime::now()).text;
+        assert!(status.contains("asking for a newer one failed"), "{status}");
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+
+        // It is tried again after a rest, not at once.
+        answered(
+            &mut layer,
+            at(25, 12, 0),
+            real,
+            start + Duration::from_secs(30),
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        let later = start + Duration::from_secs(12) + RETRY + Duration::from_secs(1);
+        answered(&mut layer, at(25, 12, 0), real, later);
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_failed_first_search_gives_its_reason() {
+        let find: FindPicture = Arc::new(|_, _| Err(FetchError::Refused(503)));
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
+        layer.set_on(true);
+        let real = at(25, 16, 40);
+        answered(&mut layer, real, real, Instant::now());
+        assert_eq!(layer.picture(), None);
+        let status = layer.status(SystemTime::now()).text;
+        assert!(
+            status.contains("finding its picture failed: the source answered with HTTP status 503"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn a_layer_that_is_off_asks_its_source_nothing() {
+        let (find, asked) = holding_up_to(at(25, 15, 10));
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
+        layer.update(at(25, 16, 40), Highlight::default());
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        assert!(layer.search.is_none());
+    }
+
+    #[test]
     fn the_picture_changes_only_once_the_clock_has_settled_on_a_moment() {
-        let mut layer = PictureLayer::new(&GOES_EAST);
+        let (find, asked) = holding_up_to(at(25, 11, 0));
+        let mut layer = PictureLayer::new(&GOES_EAST, find);
         layer.set_on(true);
         let real = at(25, 11, 0);
         let start = Instant::now();
-        let showing = |layer: &PictureLayer| layer.showing.clone().unwrap();
 
-        // The first picture is shown at once.
-        layer.show(at(24, 6, 0), real, start);
-        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+        // The first picture is asked for at once.
+        answered(&mut layer, at(24, 6, 0), real, start);
+        assert_eq!(showing(&layer), Some("2026-11-24T06:00:00Z"));
 
-        // The clock racing through ten minutes every tenth of a second changes nothing.
+        // The clock racing through ten minutes every tenth of a second changes
+        // nothing, and asks the Source nothing.
         for step in 1_u32..=20 {
             let moment = JulianDate(at(24, 6, 0).0 + f64::from(step) * 10.0 * MINUTE);
             layer.show(
@@ -396,19 +747,38 @@ mod tests {
                 start + Duration::from_millis(100 * u64::from(step)),
             );
         }
-        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+        assert_eq!(showing(&layer), Some("2026-11-24T06:00:00Z"));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
 
         // Once it stops, the picture for where it stopped is shown after a moment.
         let stopped = JulianDate(at(24, 6, 0).0 + 200.0 * MINUTE);
         layer.show(stopped, real, start + Duration::from_millis(2500));
-        assert_eq!(showing(&layer), "2026-11-24T06:00:00Z");
+        assert_eq!(showing(&layer), Some("2026-11-24T06:00:00Z"));
+        assert!(layer.search.is_none());
         layer.show(stopped, real, start + Duration::from_millis(3300));
-        assert_eq!(showing(&layer), "2026-11-24T09:20:00Z");
+        answered(
+            &mut layer,
+            stopped,
+            real,
+            start + Duration::from_millis(3300),
+        );
+        assert_eq!(showing(&layer), Some("2026-11-24T09:20:00Z"));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_daily_picture_is_shown_without_asking() {
+        let (find, asked) = holding_up_to(at(25, 11, 0));
+        let mut layer = PictureLayer::new(&DAILY_TRUE_COLOUR, find);
+        layer.set_on(true);
+        layer.show(at(25, 11, 0), at(25, 11, 0), Instant::now());
+        assert_eq!(showing(&layer), Some("2026-11-24"));
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn a_picture_reaches_as_far_back_as_its_source_keeps_it() {
-        let layer = PictureLayer::new(&GOES_EAST);
+        let layer = PictureLayer::new(&GOES_EAST, holding_everything());
         let now = at(25, 11, 0);
         assert!(layer.time_coverage().covers(at(23, 12, 0), now));
         assert!(!layer.time_coverage().covers(at(20, 12, 0), now));
