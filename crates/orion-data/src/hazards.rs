@@ -97,7 +97,7 @@ fn features_of(document: &Value) -> Result<&Vec<Value>, ParseError> {
 }
 
 /// Writes a moment as `2026-11-25 10:14 UTC`, to the nearest minute.
-fn format_moment(moment: JulianDate) -> String {
+pub(crate) fn format_moment(moment: JulianDate) -> String {
     let time = JulianDate(moment.0 + 30.0 / 86_400.0).to_utc();
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} UTC",

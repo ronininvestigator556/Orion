@@ -13,6 +13,7 @@ A sidebar lists the Layers under their Themes, each with a switch, a filter and 
 - **Orbit.** About 29,000 Tracked Objects at their computed Positions. Click one for its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. Filter by kind, Orbit Regime and Group, such as weather satellites or Starlink.
 - **Places.** Airports, licence plate cameras, data centres and military sites.
 - **Energy.** Power plants by what they run on, pipelines drawn as their routes, refineries and oil sites, offshore platforms, mines by what they dig, and dams.
+- **Roads.** Road Incidents, a country at a time: accidents, closures and roadworks on the roads the French state runs, traffic announcements and roadworks in Finland, and work zones under way in the U.S. states that publish theirs. Each says what it leaves out: France has no toll motorways, and no U.S. state publishes its accidents.
 - **Traffic.** Flights around the middle of the view, refreshed every few minutes and moved along their headings in between. Ships in the northern Baltic, the one sea whose ships are published for anyone to use without a key.
 - **Weather.** Pictures laid over the Base Map: each day's clouds, the view from three weather satellites every ten minutes, rain and snow, and sea surface temperature.
 - **Hazards.** Earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts. And Travel Advisories: one mark for each country, coloured by the level the United States sets from 1 to 4, with the United Kingdom's and Canada's advice beside it and a link to each government's page.
@@ -92,6 +93,8 @@ Copying a file from there into the `layers` folder inside Orion's cache folder m
 
 The same release carries the file of Travel Advisories, which the Travel Advisories workflow rebuilds four times a day by running `tools/make_advisories.py`. Each government files its advice under its own names and codes for countries, so the job joins them once for everybody.
 
+It also carries the file of U.S. work zones, which the Road Works workflow gathers every hour by running `tools/make_road_works.py`: about twenty states and cities publish a list without a key, and fetching each from every copy of Orion would be slow and unkind to them.
+
 ## On trial
 
 Starting Orion with `--experimental` lists Layers that are still being judged and are not part of a release:
@@ -118,7 +121,7 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`. The borders, roads and place names in its `assets` folder are built from Natural Earth by `cargo run --release --package orion-core --example make_reference`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
 - `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
-- `tools/`: scripts that prepare data. `make_extracts.py` builds the Extracts from OpenStreetMap, `make_unrest.py` sifts the news into Unrest Reports, and `make_advisories.py` joins three governments' Travel Advisories, placing countries by `countries.tsv`, which `make_countries.py` builds. `make_nws_zones.py` builds the bundled table of U.S. forecast zones that weather alerts are placed by.
+- `tools/`: scripts that prepare data. `make_extracts.py` builds the Extracts from OpenStreetMap, `make_unrest.py` sifts the news into Unrest Reports, `make_road_works.py` gathers the U.S. states' work zones, and `make_advisories.py` joins three governments' Travel Advisories, placing countries by `countries.tsv`, which `make_countries.py` builds. `make_nws_zones.py` builds the bundled table of U.S. forecast zones that weather alerts are placed by.
 - `.github/workflows/`: checks run on every push, the release build, and the weekly Extracts.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.
@@ -135,6 +138,7 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - Earthquakes: the U.S. Geological Survey's Earthquake Hazards Program.
 - Fire detections: NASA's Fire Information for Resource Management System (FIRMS), part of NASA's Earth Science Data and Information System (ESDIS).
 - Tropical storms: the U.S. National Hurricane Center. Weather alerts and forecast zones: the U.S. National Weather Service. Both are part of NOAA, and their data is in the public domain.
+- Road Incidents: Bison Futé, the French state's road information service, under the [Licence Ouverte 2.0](https://www.etalab.gouv.fr/licence-ouverte-open-licence/); Fintraffic / digitraffic.fi, under CC BY 4.0; and the U.S. states and cities that publish their work zones in the Work Zone Data Exchange format into the public domain, as listed by the U.S. Department of Transportation.
 - Travel Advisories: the U.S. Department of State (public domain); the UK Foreign, Commonwealth & Development Office, which contains public sector information licensed under the [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/); and Global Affairs Canada, which contains information licensed under the [Open Government Licence - Canada](https://open.canada.ca/en/open-government-licence-canada). Countries are placed using [Natural Earth](https://www.naturalearthdata.com).
 - Stars: the Yale Bright Star Catalogue, 5th revised edition (Hoffleit and Warren, 1991), which is in the public domain.
 - Orbital data: Element Sets from [CelesTrak](https://celestrak.org), derived from the catalogue published by the U.S. Space Force at Space-Track.org.

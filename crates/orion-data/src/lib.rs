@@ -10,6 +10,7 @@ pub mod hazards;
 pub mod import;
 pub mod listing;
 pub mod places;
+pub mod roads;
 pub mod settings;
 mod source;
 pub mod streets;

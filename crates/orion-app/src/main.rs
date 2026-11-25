@@ -19,6 +19,7 @@ mod picture_layer;
 mod places_layers;
 mod reference;
 mod renderer;
+mod road_layers;
 mod sidebar;
 mod stars;
 mod streetmap;
@@ -444,6 +445,7 @@ impl Session {
         let specs = places_layers::ALL
             .into_iter()
             .chain(energy_layers::ALL)
+            .chain(road_layers::ALL)
             .chain(hazard_layers::ALL);
         for spec in specs {
             layers.add(Box::new(feature_layer::FeatureLayer::new(

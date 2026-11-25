@@ -1,0 +1,38 @@
+name: Road Works
+
+# Gathers the work zones under way on U.S. roads, from the states that publish
+# theirs without a key, into the one file every copy of Orion downloads, and
+# publishes it beside the Extracts (ADR 0004).
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: road-works
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  gather:
+    name: Gather and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      # A state's list being down is reported and the others still used. The job
+      # stops without writing only if none can be used.
+      - name: Gather the states' work zones
+        run: python3 tools/make_road_works.py road_works
+      - name: Publish
+        run: |
+          if ! gh release view extracts >/dev/null 2>&1; then
+            gh release create extracts --latest=false --title "Extracts" \
+              --notes "Files of places that Orion downloads, rebuilt on a schedule. This is not a version of the app: for that, see the other releases."
+          fi
+          gh release upload extracts road_works/road_works_us.tsv --clobber
