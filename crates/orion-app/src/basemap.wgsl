@@ -7,6 +7,9 @@ struct Frame {
     sun_direction: vec3<f32>,
     // 0 seen from far away, rising to 1 close to the ground.
     closeness: f32,
+    // For a picture laid over the Base Map: 1, its opacity, and 1 if black is empty.
+    // All zero for the Base Map itself.
+    overlay: vec4<f32>,
 }
 
 struct Tile {
@@ -54,7 +57,17 @@ const TWILIGHT: f32 = 0.1;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let day = textureSample(tile_texture, tile_sampler, in.uv).rgb;
+    let texel = textureSample(tile_texture, tile_sampler, in.uv);
+    if frame.overlay.x > 0.5 {
+        // A picture over the Base Map is shown as it is, by day and by night, through
+        // its own transparency. Some pictures leave what they did not see black.
+        var seen = texel.a;
+        if frame.overlay.z > 0.5 {
+            seen *= smoothstep(0.004, 0.03, max(texel.r, max(texel.g, texel.b)));
+        }
+        return vec4<f32>(texel.rgb, seen * frame.overlay.y);
+    }
+    let day = texel.rgb;
     let sun_elevation = dot(normalize(in.normal), frame.sun_direction);
     let sunlit = pow(max(sun_elevation, 0.0), 0.6);
     let daylight = smoothstep(-TWILIGHT, TWILIGHT, sun_elevation);

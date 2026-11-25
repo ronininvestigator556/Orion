@@ -15,6 +15,7 @@ mod lines;
 mod objects;
 mod orbit_layer;
 mod picking;
+mod picture_layer;
 mod places_layers;
 mod reference;
 mod renderer;
@@ -366,6 +367,9 @@ impl Session {
         layers.add(Box::new(flight_layer::FlightLayer::new(Arc::clone(
             &fetcher,
         ))));
+        for spec in picture_layer::ALL {
+            layers.add(Box::new(picture_layer::PictureLayer::new(spec)));
+        }
         for wanted in &options.layers {
             let found = (0..layers.len()).find(|index| {
                 layers
@@ -615,6 +619,7 @@ impl Session {
         // for the sidebar to change while it is drawn.
         let dots = self.layers.take_dots();
         let routes = self.layers.routes();
+        let pictures = self.layers.pictures();
         let scene = Scene {
             view_projection: pick_view.view_projection,
             camera_position: pick_view.camera_position,
@@ -622,6 +627,7 @@ impl Session {
             objects: &dots,
             clusters: &self.cluster_dots,
             routes: &routes,
+            pictures: &pictures,
             lines: &self.segments,
             sidereal_angle: self.sidereal_angle,
             base_map: self.base_map,

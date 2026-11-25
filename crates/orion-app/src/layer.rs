@@ -8,6 +8,7 @@ use glam::Vec3;
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
 
+use crate::basemap::Picture;
 use crate::feed::Refresh;
 use crate::lines::Segment;
 use crate::objects::Instance;
@@ -163,6 +164,17 @@ pub trait Layer {
         None
     }
 
+    /// False for a Layer that is a picture and has no Features to count, find or filter.
+    fn has_features(&self) -> bool {
+        true
+    }
+
+    /// The picture the Layer lays over the Base Map, as of the last `update`, if it
+    /// is that kind of Layer.
+    fn picture(&self) -> Option<Picture> {
+        None
+    }
+
     /// Every route the Layer draws, as of the last `update`, with a number that
     /// changes whenever they do. `None` for a Layer of points.
     fn routes(&self) -> Option<(u64, Arc<Vec<Segment>>)> {
@@ -185,6 +197,8 @@ pub struct Layers {
     dots: Vec<Instance>,
     /// Which stretch of `dots` belongs to each Layer; empty for a Layer not on show.
     ranges: Vec<Range<usize>>,
+    /// Which Layers are on show: switched on, and able to show the clock's moment.
+    shown: Vec<bool>,
 }
 
 impl Layers {
@@ -194,6 +208,7 @@ impl Layers {
             others: Vec::new(),
             dots: Vec::new(),
             ranges: Vec::new(),
+            shown: Vec::new(),
         }
     }
 
@@ -236,6 +251,7 @@ impl Layers {
     ) {
         self.dots.clear();
         self.ranges.clear();
+        self.shown.clear();
         for index in 0..self.len() {
             let start = self.dots.len();
             let on_this_layer = |feature: Option<FeatureRef>| {
@@ -252,10 +268,12 @@ impl Layers {
                 0 => &mut self.orbit,
                 other => &mut *self.others[other - 1],
             };
-            if layer.is_on() && layer.time_coverage().covers(at, real_now) {
+            let shown = layer.is_on() && layer.time_coverage().covers(at, real_now);
+            if shown {
                 layer.update(at, highlight);
                 self.dots.extend_from_slice(layer.dots());
             }
+            self.shown.push(shown);
             self.ranges.push(start..self.dots.len());
         }
     }
@@ -271,24 +289,21 @@ impl Layers {
 
     /// The Clusters of every Layer on show.
     pub fn clusters(&self) -> impl Iterator<Item = &ClusterMark> {
-        (0..self.len())
-            .filter(|index| {
-                self.ranges
-                    .get(*index)
-                    .is_some_and(|range| !range.is_empty())
-            })
-            .filter_map(|index| self.get(index))
-            .flat_map(|layer| layer.clusters())
+        self.on_show().flat_map(|(_, layer)| layer.clusters())
     }
 
     fn on_show(&self) -> impl Iterator<Item = (usize, &dyn Layer)> {
         (0..self.len())
-            .filter(|index| {
-                self.ranges
-                    .get(*index)
-                    .is_some_and(|range| !range.is_empty())
-            })
+            .filter(|index| self.shown.get(*index).copied().unwrap_or(false))
             .filter_map(|index| Some((index, self.get(index)?)))
+    }
+
+    /// The pictures laid over the Base Map by the Layers on show, with each Layer's
+    /// position, in the order they are to be drawn.
+    pub fn pictures(&self) -> Vec<(usize, Picture)> {
+        self.on_show()
+            .filter_map(|(layer, on_show)| Some((layer, on_show.picture()?)))
+            .collect()
     }
 
     /// The routes of every Layer on show that draws any.

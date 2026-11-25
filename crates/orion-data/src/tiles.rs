@@ -1,5 +1,6 @@
 //! Fetching Base Map tiles and keeping them on disk.
 
+use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,12 +11,13 @@ use orion_core::tiles::TileKey;
 use crate::FetchError;
 
 /// One picture of the world, published as a pyramid of tiles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TileLayer {
     /// The name the service knows the picture by.
     pub name: &'static str,
-    /// Which date's picture to ask for; `default` for pictures that do not change.
-    pub time: &'static str,
+    /// Which moment's picture to ask for, as a date or a date and time; `default`
+    /// for pictures that do not change.
+    pub time: Cow<'static, str>,
     /// The name of the tile grid the picture is cut on.
     pub matrix_set: &'static str,
     /// File extension, which also says how the tile is encoded.
@@ -27,7 +29,7 @@ pub struct TileLayer {
 /// NASA's Blue Marble: the whole Earth, cloud-free, at about 500 metres per pixel.
 pub const BLUE_MARBLE: TileLayer = TileLayer {
     name: "BlueMarble_ShadedRelief_Bathymetry",
-    time: "default",
+    time: Cow::Borrowed("default"),
     matrix_set: "500m",
     extension: "jpeg",
     max_level: 7,
@@ -36,11 +38,69 @@ pub const BLUE_MARBLE: TileLayer = TileLayer {
 /// A cloud-free Landsat composite of the year 2000, at about 30 metres per pixel.
 pub const LANDSAT: TileLayer = TileLayer {
     name: "Landsat_WELD_CorrectedReflectance_TrueColor_Global_Annual",
-    time: "2000-12-01",
+    time: Cow::Borrowed("2000-12-01"),
     matrix_set: "31.25m",
     extension: "jpeg",
     max_level: 11,
 };
+
+impl TileLayer {
+    /// The same picture as it was at another moment, written the way the service
+    /// expects: `2026-11-24` for a daily picture, `2026-11-25T06:50:00Z` for one made
+    /// several times a day.
+    pub fn at(&self, time: impl Into<String>) -> Self {
+        Self {
+            time: Cow::Owned(time.into()),
+            ..self.clone()
+        }
+    }
+}
+
+/// A picture made afresh each day or several times a day. Its `time` here is only a
+/// placeholder: ask for a moment with [`TileLayer::at`].
+const fn dated(
+    name: &'static str,
+    matrix_set: &'static str,
+    extension: &'static str,
+    max_level: u8,
+) -> TileLayer {
+    TileLayer {
+        name,
+        time: Cow::Borrowed("default"),
+        matrix_set,
+        extension,
+        max_level,
+    }
+}
+
+/// The day's view of the whole Earth in true colour, clouds and all, from the VIIRS
+/// instrument on the NOAA-20 satellite. One picture a day.
+pub const DAILY_TRUE_COLOUR: TileLayer = dated(
+    "VIIRS_NOAA20_CorrectedReflectance_TrueColor",
+    "250m",
+    "jpeg",
+    8,
+);
+
+/// The Americas and the Atlantic from the GOES-East weather satellite, in colour by
+/// day and infrared by night. A picture every ten minutes.
+pub const GOES_EAST: TileLayer = dated("GOES-East_ABI_GeoColor", "1km", "png", 6);
+
+/// The Pacific and western Americas from the GOES-West weather satellite, likewise.
+pub const GOES_WEST: TileLayer = dated("GOES-West_ABI_GeoColor", "1km", "png", 6);
+
+/// East Asia, Australia and the western Pacific from the Himawari weather satellite,
+/// in infrared, where the coldest and so highest cloud tops are brightest.
+pub const HIMAWARI: TileLayer = dated("Himawari_AHI_Band13_Clean_Infrared", "2km", "png", 5);
+
+/// How hard it rained or snowed, estimated from many satellites together by NASA's
+/// IMERG. One picture a day, published a couple of days later.
+pub const PRECIPITATION: TileLayer = dated("IMERG_Precipitation_Rate", "2km", "png", 5);
+
+/// The temperature of the sea's surface, from many instruments combined. One picture
+/// a day, published a couple of days later.
+pub const SEA_SURFACE_TEMPERATURE: TileLayer =
+    dated("GHRSST_L4_MUR_Sea_Surface_Temperature", "1km", "png", 6);
 
 /// A tile is a few tens of kilobytes; this guards against a runaway response.
 const MAX_TILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -124,7 +184,8 @@ impl TileCache {
     fn path(&self, layer: &TileLayer, key: TileKey) -> PathBuf {
         self.dir
             .join(layer.name)
-            .join(layer.time)
+            // A colon cannot be part of a folder's name everywhere.
+            .join(layer.time.replace(':', "-"))
             .join(key.level.to_string())
             .join(key.row.to_string())
             .join(format!("{}.{}", key.col, layer.extension))
@@ -249,6 +310,24 @@ mod tests {
                 )
                 .ends_with("/BlueMarble_ShadedRelief_Bathymetry/default/default/500m/3/1/1.jpeg")
         );
+    }
+
+    #[test]
+    fn a_dated_picture_is_asked_for_by_its_moment_and_kept_apart_by_it() {
+        let source = TileSource::new();
+        let morning = GOES_EAST.at("2026-11-25T06:50:00Z");
+        assert!(
+            source
+                .url(&morning, KEY)
+                .ends_with("/GOES-East_ABI_GeoColor/default/2026-11-25T06:50:00Z/1km/9/92/102.png")
+        );
+        assert_eq!(GOES_EAST.time, "default");
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TileCache::at(dir.path());
+        cache.put(&morning, KEY, b"morning").unwrap();
+        assert_eq!(cache.get(&GOES_EAST.at("2026-11-25T07:00:00Z"), KEY), None);
+        assert_eq!(cache.get(&morning, KEY).unwrap(), b"morning");
     }
 
     #[test]

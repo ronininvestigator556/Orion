@@ -77,7 +77,7 @@ pub fn draw_about(ctx: &egui::Context) {
 
             ui.separator();
             ui.label("Orbital data and catalogue: CelesTrak, from the catalogue published by the U.S. Space Force at Space-Track.org.");
-            ui.label("Earth imagery: NASA Blue Marble and Black Marble, and a Landsat composite, streamed from NASA's Global Imagery Browse Services.");
+            ui.label("Earth imagery: NASA Blue Marble and Black Marble, and a Landsat composite, and the weather pictures, streamed from NASA's Global Imagery Browse Services.");
             ui.label("Borders, roads and place names: Natural Earth, in the public domain.");
             ui.label("Airports: OurAirports. Licence plate cameras, data centres, military sites and the Energy Layers: © OpenStreetMap contributors, under the Open Database Licence.");
             ui.label("Flights: adsb.lol contributors, under the Open Database Licence.");

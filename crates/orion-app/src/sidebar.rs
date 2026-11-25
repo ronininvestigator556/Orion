@@ -142,7 +142,9 @@ fn draw_layer(
         ui.painter()
             .rect_filled(swatch, 2.0, egui::Rgba::from_rgba_unmultiplied(r, g, b, a));
         ui.label(layer.name());
-        ui.weak(format_counts(layer.counts()));
+        if layer.has_features() {
+            ui.weak(format_counts(layer.counts()));
+        }
     });
     if !layer.is_on() {
         return;
@@ -187,7 +189,9 @@ fn draw_layer(
                 }
             }
         }
-        ui.collapsing("Filter", |ui| layer.filter_ui(ui));
+        if layer.has_features() {
+            ui.collapsing("Filter", |ui| layer.filter_ui(ui));
+        }
     });
 }
 

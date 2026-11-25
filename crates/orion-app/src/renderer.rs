@@ -13,7 +13,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
-use crate::basemap::{BaseMap, BaseMapChoices, BaseMapView};
+use crate::basemap::{BaseMap, BaseMapChoices, BaseMapView, Picture};
 use crate::globe::Globe;
 use crate::layer::Routes;
 use crate::lines::{Lines, Segment};
@@ -51,6 +51,9 @@ pub struct Scene<'a> {
     pub clusters: &'a [Instance],
     /// The routes of each Layer that draws them.
     pub routes: &'a [Routes],
+    /// The pictures laid over the Base Map, each with its Layer's position, in the
+    /// order they are to be drawn.
+    pub pictures: &'a [(usize, Picture)],
     /// Orbit Paths and Ground Tracks.
     pub lines: &'a [Segment],
     /// How far, in radians, the Earth-fixed frame is turned east of the stars.
@@ -94,6 +97,12 @@ pub struct Renderer {
 
     globe: Globe,
     base_map: BaseMap,
+    /// A pyramid for each Layer that has laid a picture over the Base Map, with the
+    /// Layer's position. Kept until the app closes.
+    overlays: Vec<(usize, BaseMap)>,
+    /// Which of those to draw this frame.
+    overlays_on_show: Vec<usize>,
+    tile_cache: Option<TileCache>,
     reference: ReferenceLines,
     stars: Stars,
     lines: Lines,
@@ -254,7 +263,7 @@ impl Renderer {
         log::info!("rendering on {} ({})", gpu_info.adapter, gpu_info.backend);
 
         let globe = Globe::new(&device, &queue, scene_format)?;
-        let base_map = BaseMap::new(&device, scene_format, tile_cache);
+        let base_map = BaseMap::new(&device, scene_format, tile_cache.clone());
         let reference = ReferenceLines::new(&device, &queue, scene_format)?;
         let stars = Stars::new(&device, scene_format)?;
         let lines = Lines::new(&device, scene_format);
@@ -273,6 +282,9 @@ impl Renderer {
             gpu_info,
             globe,
             base_map,
+            overlays: Vec::new(),
+            overlays_on_show: Vec::new(),
+            tile_cache,
             reference,
             stars,
             lines,
@@ -373,17 +385,40 @@ impl Renderer {
         };
         self.globe
             .update(&self.queue, scene.view_projection, scene.sun_direction);
-        self.base_map.update(
-            &self.device,
-            &self.queue,
-            &BaseMapView {
-                streaming: scene.base_map.imagery,
-                view_projection: scene.view_projection,
-                camera_position: scene.camera_position,
-                sun_direction: scene.sun_direction,
-                viewport,
-            },
-        );
+        let mut base_map_view = BaseMapView {
+            streaming: scene.base_map.imagery,
+            view_projection: scene.view_projection,
+            camera_position: scene.camera_position,
+            sun_direction: scene.sun_direction,
+            viewport,
+        };
+        self.base_map
+            .update(&self.device, &self.queue, &base_map_view);
+        // A Layer's picture is streamed whether or not the Base Map's own imagery is.
+        base_map_view.streaming = true;
+        self.overlays_on_show.clear();
+        for (layer, picture) in scene.pictures {
+            let slot = match self.overlays.iter().position(|(owner, _)| owner == layer) {
+                Some(slot) => {
+                    self.overlays[slot].1.set_picture(picture.clone());
+                    slot
+                }
+                None => {
+                    let pyramid = BaseMap::overlay(
+                        &self.device,
+                        self.scene_format,
+                        self.tile_cache.clone(),
+                        picture.clone(),
+                    );
+                    self.overlays.push((*layer, pyramid));
+                    self.overlays.len() - 1
+                }
+            };
+            self.overlays[slot]
+                .1
+                .update(&self.device, &self.queue, &base_map_view);
+            self.overlays_on_show.push(slot);
+        }
         self.reference.update(&self.queue, &view, scene.base_map);
         self.stars.update(
             &self.queue,
@@ -489,6 +524,9 @@ impl Renderer {
             self.globe.draw(&mut pass);
             // Sharper tiles over the bundled picture, wherever they have arrived.
             self.base_map.draw(&mut pass);
+            for slot in &self.overlays_on_show {
+                self.overlays[*slot].1.draw(&mut pass);
+            }
             // Borders and roads lie on the ground, under everything that flies.
             self.reference.draw(&mut pass);
             for slot in &self.routes_on_show {
