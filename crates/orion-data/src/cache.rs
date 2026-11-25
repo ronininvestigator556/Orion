@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime};
 
 use orion_core::catalogue::CatalogueRecords;
 
-use crate::{ElementSetFiles, Loaded, parse_catalogue};
+use orion_core::filter::{Group, GroupLists};
+
+use crate::{ElementSetFiles, Loaded, parse_catalogue, parse_group};
 
 const SATELLITES: &str = "satellites.csv";
 const ROCKET_BODIES: &str = "rocket_bodies.csv";
@@ -20,6 +22,17 @@ const LAST_ATTEMPT: &str = "last_attempt";
 const CATALOGUE: &str = "catalogue.csv";
 /// Holds the time the catalogue was fetched, as seconds since 1970.
 const CATALOGUE_FETCHED_AT: &str = "catalogue_fetched_at";
+
+/// The file a listed Group's members are kept in, or `None` for a Group that is
+/// recognised by name and has no list.
+fn group_file(group: Group) -> Option<&'static str> {
+    match group {
+        Group::Weather => Some("group_weather.csv"),
+        Group::SpaceStations => Some("group_space_stations.csv"),
+        Group::Navigation => Some("group_navigation.csv"),
+        Group::Starlink | Group::OneWeb | Group::Kuiper | Group::Qianfan | Group::Guowang => None,
+    }
+}
 
 /// A folder holding the most recently fetched Element Sets.
 #[derive(Clone, Debug)]
@@ -82,6 +95,27 @@ impl Cache {
         self.read_time(CATALOGUE_FETCHED_AT)
     }
 
+    /// The stored member lists for every listed Group, or `None` unless all of them
+    /// are present and readable.
+    pub fn load_groups(&self) -> Option<GroupLists> {
+        let mut lists = GroupLists::default();
+        for group in Group::LISTED {
+            let text = fs::read_to_string(self.dir.join(group_file(group)?)).ok()?;
+            lists.set(group, parse_group(&text)?);
+        }
+        Some(lists)
+    }
+
+    /// Replaces the stored member list of one listed Group.
+    pub fn store_group(&self, group: Group, text: &str) -> io::Result<()> {
+        let name = group_file(group).ok_or_else(|| {
+            io::Error::other(format!(
+                "{group:?} members are recognised by name, not listed"
+            ))
+        })?;
+        self.write(name, text)
+    }
+
     /// When a fetch was last attempted, whether or not it succeeded.
     pub fn last_attempt(&self) -> Option<SystemTime> {
         self.read_time(LAST_ATTEMPT)
@@ -121,6 +155,32 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::test_support::{catalogue, files, hours};
+
+    #[test]
+    fn group_lists_load_only_when_all_are_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::at(dir.path());
+        cache
+            .store_group(Group::Weather, "NORAD_CAT_ID\n43013\n")
+            .unwrap();
+        cache
+            .store_group(Group::SpaceStations, "NORAD_CAT_ID\n25544\n")
+            .unwrap();
+        assert!(cache.load_groups().is_none());
+
+        cache
+            .store_group(Group::Navigation, "NORAD_CAT_ID\n24876\n32260\n")
+            .unwrap();
+        let lists = cache.load_groups().expect("all three lists");
+        assert_eq!(lists.len(Group::Navigation), 2);
+
+        // A constellation has no list to store.
+        assert!(
+            cache
+                .store_group(Group::Starlink, "NORAD_CAT_ID\n1\n")
+                .is_err()
+        );
+    }
 
     #[test]
     fn stored_catalogue_records_load_again() {

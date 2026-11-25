@@ -3,6 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use orion_core::filter::Group;
+
 use crate::{ElementSetFiles, has_catalogue_header, has_element_set_header};
 
 /// A place Element Sets can be fetched from.
@@ -18,6 +20,9 @@ pub trait Source: Send + Sync {
 
     /// Fetches the catalogue file that Catalogue Records are read from.
     fn fetch_catalogue(&self) -> Result<String, FetchError>;
+
+    /// Fetches a file listing the members of one of the Groups in [`Group::LISTED`].
+    fn fetch_group(&self, group: Group) -> Result<String, FetchError>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +146,19 @@ impl Source for CelesTrak {
         })
     }
 
+    fn fetch_group(&self, group: Group) -> Result<String, FetchError> {
+        let name = match group {
+            Group::Weather => "weather",
+            Group::SpaceStations => "stations",
+            Group::Navigation => "gnss",
+            // Constellations are recognised by name, so CelesTrak is never asked for them.
+            Group::Starlink | Group::OneWeb | Group::Kuiper | Group::Qianfan | Group::Guowang => {
+                return Err(FetchError::NotElementSets);
+            }
+        };
+        self.query("GROUP", name)
+    }
+
     fn fetch_catalogue(&self) -> Result<String, FetchError> {
         let mut response = self
             .agent
@@ -172,6 +190,23 @@ mod tests {
 
     fn celestrak(server: &FakeServer) -> CelesTrak {
         CelesTrak::with_endpoints(server.endpoint(), server.catalogue_endpoint())
+    }
+
+    #[test]
+    fn listed_groups_are_asked_for_by_celestraks_names() {
+        let server = FakeServer::start(|_| (200, files().satellites));
+        let source = celestrak(&server);
+        for group in Group::LISTED {
+            assert_eq!(source.fetch_group(group), Ok(files().satellites));
+        }
+        let requests = server.requests();
+        for (request, name) in requests.iter().zip(["weather", "stations", "gnss"]) {
+            assert!(request.contains(&format!("GROUP={name}&")), "{request}");
+        }
+
+        // A constellation is never asked for.
+        assert!(source.fetch_group(Group::Starlink).is_err());
+        assert_eq!(server.requests().len(), 3);
     }
 
     #[test]

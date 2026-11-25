@@ -6,6 +6,7 @@ use glam::{DVec3, Vec3};
 use orion_core::EARTH_EQUATORIAL_RADIUS_KM;
 use orion_core::catalogue::{CatalogueRecords, ObjectKind, TrackedObject};
 use orion_core::codes::{launch_site_name, owner_name};
+use orion_core::filter::{Filter, GroupLists};
 use orion_core::frames::{Geodetic, geodetic};
 use orion_core::time::{CalendarTime, JulianDate};
 use rayon::prelude::*;
@@ -79,6 +80,12 @@ fn to_earth_radii(position_km: [f64; 3]) -> Vec3 {
 pub struct Tracked {
     objects: Vec<TrackedObject>,
     records: CatalogueRecords,
+    groups: GroupLists,
+    filter: Filter,
+    /// Whether each Tracked Object passes the filter, in the same order as `objects`.
+    visible: Vec<bool>,
+    /// Indexes of the objects that pass the filter, in name order.
+    matches: Vec<usize>,
     /// One per Tracked Object, in the same order, refreshed by `propagate`.
     instances: Vec<Instance>,
     /// The Epoch that half the Element Sets are older than; `None` if there are none.
@@ -94,13 +101,15 @@ pub struct Summary {
     pub debris: usize,
     /// Objects with no Position at the current moment.
     pub without_position: usize,
+    /// Objects that pass the filter.
+    pub shown: usize,
     /// The Element Age, in days, that half the Element Sets exceed.
     pub median_element_age_days: Option<f64>,
     pub propagation_ms: f32,
 }
 
 impl Tracked {
-    pub fn new(objects: Vec<TrackedObject>, records: CatalogueRecords) -> Self {
+    pub fn new(objects: Vec<TrackedObject>, records: CatalogueRecords, groups: GroupLists) -> Self {
         // The median, not the newest: a few Element Sets are published with an Epoch
         // days in the future, which would make the whole set look fresher than it is.
         let mut epochs: Vec<f64> = objects
@@ -110,29 +119,79 @@ impl Tracked {
         epochs.sort_by(f64::total_cmp);
         let median_epoch = epochs.get(epochs.len() / 2).copied().map(JulianDate);
 
-        Self {
+        let mut tracked = Self {
             objects,
             records,
+            groups,
+            filter: Filter::default(),
+            visible: Vec::new(),
+            matches: Vec::new(),
             instances: Vec::new(),
             median_epoch,
             last_propagation: Duration::ZERO,
-        }
+        };
+        tracked.apply_filter();
+        tracked
     }
 
-    /// Swaps in a new set of Tracked Objects after a refresh, and new Catalogue Records
-    /// if the refresh brought them.
-    pub fn replace(&mut self, objects: Vec<TrackedObject>, records: Option<CatalogueRecords>) {
+    /// Changes which Tracked Objects are on show.
+    pub fn set_filter(&mut self, filter: Filter) {
+        self.filter = filter;
+        self.apply_filter();
+    }
+
+    /// Works out afresh which objects pass the filter.
+    fn apply_filter(&mut self) {
+        self.visible = self
+            .objects
+            .par_iter()
+            .map(|object| self.filter.matches(object, &self.groups))
+            .collect();
+        self.matches = (0..self.objects.len())
+            .filter(|index| self.visible[*index])
+            .collect();
+        self.matches
+            .sort_by(|a, b| self.objects[*a].name.cmp(&self.objects[*b].name));
+    }
+
+    /// Indexes of the Tracked Objects that pass the filter, in name order.
+    pub fn matches(&self) -> &[usize] {
+        &self.matches
+    }
+
+    /// How many Tracked Objects there are, shown or not.
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    /// Swaps in a new set of Tracked Objects after a refresh, with new Catalogue Records
+    /// and Group lists if the refresh brought them. The filter stays as it was.
+    pub fn replace(
+        &mut self,
+        objects: Vec<TrackedObject>,
+        records: Option<CatalogueRecords>,
+        groups: Option<GroupLists>,
+    ) {
         let records = records.unwrap_or_else(|| std::mem::take(&mut self.records));
-        *self = Self::new(objects, records);
+        let groups = groups.unwrap_or_else(|| std::mem::take(&mut self.groups));
+        let filter = self.filter.clone();
+        *self = Self::new(objects, records, groups);
+        self.set_filter(filter);
     }
 
     /// Computes every Tracked Object's Position at the given moment.
     pub fn propagate(&mut self, at: JulianDate, highlight: Highlight) {
         let started = Instant::now();
+        let visible = &self.visible;
         self.objects
             .par_iter()
             .enumerate()
             .map(|(index, object)| {
+                // The selected object stays on show even when the filter excludes it,
+                // so its panel never describes something invisible.
+                if !visible[index] && highlight.selected != Some(index) {
+                    return Instance::HIDDEN;
+                }
                 let Some(position_km) = object.element_set.position(at) else {
                     return Instance::HIDDEN;
                 };
@@ -236,11 +295,14 @@ impl Tracked {
             satellites: count(ObjectKind::Satellite),
             rocket_bodies: count(ObjectKind::RocketBody),
             debris: count(ObjectKind::Debris),
+            // Dots hidden by the filter are not missing a Position.
             without_position: self
                 .instances
                 .iter()
-                .filter(|instance| instance.is_hidden())
+                .zip(&self.visible)
+                .filter(|(instance, visible)| **visible && instance.is_hidden())
                 .count(),
+            shown: self.matches.len(),
             median_element_age_days: self.median_epoch.map(|epoch| at.0 - epoch.0),
             propagation_ms: self.last_propagation.as_secs_f32() * 1000.0,
         }
@@ -252,12 +314,15 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::feed::{load_snapshot, load_snapshot_catalogue};
+    use orion_core::filter::Group;
+
+    use crate::feed::{load_snapshot, load_snapshot_catalogue, load_snapshot_groups};
 
     fn snapshot() -> Tracked {
         Tracked::new(
             load_snapshot().expect("a readable Snapshot"),
             load_snapshot_catalogue().expect("readable Catalogue Records"),
+            load_snapshot_groups().expect("readable Group lists"),
         )
     }
 
@@ -438,7 +503,7 @@ mod tests {
         let before = tracked.details(index, snapshot_moment()).unwrap().record;
         assert!(before.is_some());
 
-        tracked.replace(load_snapshot().unwrap(), None);
+        tracked.replace(load_snapshot().unwrap(), None, None);
         let index = station(&tracked);
         assert_eq!(
             tracked.details(index, snapshot_moment()).unwrap().record,
@@ -446,7 +511,11 @@ mod tests {
         );
 
         // New records replace the old; an object missing from them has none.
-        tracked.replace(load_snapshot().unwrap(), Some(CatalogueRecords::new()));
+        tracked.replace(
+            load_snapshot().unwrap(),
+            Some(CatalogueRecords::new()),
+            None,
+        );
         let index = station(&tracked);
         assert_eq!(
             tracked.details(index, snapshot_moment()).unwrap().record,
@@ -458,5 +527,96 @@ mod tests {
     fn codes_without_a_known_name_are_shown_as_they_are() {
         assert_eq!(spell_out("US", Some("United States")), "United States (US)");
         assert_eq!(spell_out("XYZ", None), "XYZ");
+    }
+
+    #[test]
+    fn everything_is_shown_until_a_filter_is_set() {
+        let tracked = snapshot();
+        assert_eq!(tracked.matches().len(), tracked.len());
+        assert_eq!(tracked.summary(snapshot_moment()).shown, tracked.len());
+
+        // Matches are in name order.
+        let names: Vec<&str> = tracked
+            .matches()
+            .iter()
+            .map(|index| tracked.object(*index).unwrap().name.as_str())
+            .collect();
+        assert!(names.is_sorted());
+    }
+
+    #[test]
+    fn a_group_filter_shows_only_its_members() {
+        let mut tracked = snapshot();
+        tracked.set_filter(Filter {
+            group: Some(Group::SpaceStations),
+            ..Filter::default()
+        });
+
+        // CelesTrak lists 17 space station objects; all are in the Snapshot.
+        assert_eq!(tracked.matches().len(), 17);
+        assert!(tracked.matches().contains(&station(&tracked)));
+
+        tracked.propagate(snapshot_moment(), Highlight::default());
+        let drawn = tracked
+            .instances()
+            .iter()
+            .filter(|instance| !instance.is_hidden())
+            .count();
+        assert_eq!(drawn, 17);
+        assert_eq!(tracked.summary(snapshot_moment()).without_position, 0);
+    }
+
+    #[test]
+    fn searching_finds_objects_by_name() {
+        let mut tracked = snapshot();
+        tracked.set_filter(Filter {
+            text: "noaa 2".to_owned(),
+            ..Filter::default()
+        });
+        let names: Vec<&str> = tracked
+            .matches()
+            .iter()
+            .map(|index| tracked.object(*index).unwrap().name.as_str())
+            .collect();
+        assert!(names.contains(&"NOAA 20 (JPSS-1)"), "{names:?}");
+        assert!(
+            names.iter().all(|name| name.contains("NOAA 2")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn the_selected_object_stays_on_show_when_filtered_out() {
+        let mut tracked = snapshot();
+        let index = station(&tracked);
+        tracked.set_filter(Filter {
+            satellites: false,
+            ..Filter::default()
+        });
+        assert!(!tracked.matches().contains(&index));
+
+        tracked.propagate(snapshot_moment(), Highlight::default());
+        assert!(tracked.instances()[index].is_hidden());
+
+        let highlight = Highlight {
+            selected: Some(index),
+            hovered: None,
+        };
+        tracked.propagate(snapshot_moment(), highlight);
+        assert!(!tracked.instances()[index].is_hidden());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_filter() {
+        let mut tracked = snapshot();
+        tracked.set_filter(Filter {
+            group: Some(Group::Starlink),
+            ..Filter::default()
+        });
+        let before = tracked.matches().len();
+        assert!(before > 10_000);
+
+        tracked.replace(load_snapshot().unwrap(), None, None);
+        assert_eq!(tracked.matches().len(), before);
     }
 }

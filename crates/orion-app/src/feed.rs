@@ -10,6 +10,7 @@ use orion_core::catalogue::{
     CatalogueRecords, ObjectKind, TrackedObject, parse_catalogue_records_csv,
     parse_element_set_files,
 };
+use orion_core::filter::{Group, GroupLists, parse_group_members_csv};
 use orion_data::{Cache, Loaded, RefreshError, Source, attempt_allowed_at, is_stale};
 
 /// The Snapshot: Element Sets shipped inside the app, most trusted kind first.
@@ -38,11 +39,41 @@ pub fn load_snapshot_catalogue() -> anyhow::Result<CatalogueRecords> {
     parse_catalogue_records_csv(SNAPSHOT_CATALOGUE).context("reading the bundled Catalogue Records")
 }
 
+/// Member lists for the listed Groups when the Snapshot was taken, trimmed to the
+/// catalogue number column.
+const SNAPSHOT_GROUPS: [(Group, &str); 3] = [
+    (
+        Group::Weather,
+        include_str!("../assets/snapshot/groups/weather.csv"),
+    ),
+    (
+        Group::SpaceStations,
+        include_str!("../assets/snapshot/groups/space_stations.csv"),
+    ),
+    (
+        Group::Navigation,
+        include_str!("../assets/snapshot/groups/navigation.csv"),
+    ),
+];
+
+/// Reads the Group member lists in the Snapshot.
+pub fn load_snapshot_groups() -> anyhow::Result<GroupLists> {
+    let mut lists = GroupLists::default();
+    for (group, text) in SNAPSHOT_GROUPS {
+        let members = parse_group_members_csv(text)
+            .with_context(|| format!("reading the bundled {group:?} group"))?;
+        lists.set(group, members);
+    }
+    Ok(lists)
+}
+
 /// What a completed refresh delivers.
 pub struct Refreshed {
     pub objects: Vec<TrackedObject>,
     /// Present only when Catalogue Records were fetched as well.
     pub records: Option<CatalogueRecords>,
+    /// Present only when Group member lists were fetched as well.
+    pub groups: Option<GroupLists>,
 }
 
 /// When the Snapshot was fetched from CelesTrak: 25 November 2026, 05:16:24 UTC,
@@ -113,7 +144,7 @@ impl Feed {
         source: Arc<dyn Source>,
         cache: Option<Cache>,
         now: SystemTime,
-    ) -> anyhow::Result<(Self, Vec<TrackedObject>, CatalogueRecords)> {
+    ) -> anyhow::Result<(Self, Vec<TrackedObject>, CatalogueRecords, GroupLists)> {
         // A new version of the app can ship a Snapshot newer than an old cache.
         let cached = cache
             .as_ref()
@@ -141,6 +172,20 @@ impl Feed {
             None => load_snapshot_catalogue()?,
         };
 
+        // Group lists carry no date of their own; they are fetched with the catalogue file.
+        let cached_groups = cache
+            .as_ref()
+            .filter(|cache| {
+                cache
+                    .catalogue_fetched_at()
+                    .is_some_and(|fetched_at| fetched_at > snapshot_fetched_at())
+            })
+            .and_then(Cache::load_groups);
+        let groups = match cached_groups {
+            Some(groups) => groups,
+            None => load_snapshot_groups()?,
+        };
+
         let mut feed = Self {
             last_attempt: cache.as_ref().and_then(Cache::last_attempt),
             source,
@@ -153,7 +198,7 @@ impl Feed {
         if is_stale(fetched_at, now) {
             feed.request_refresh(now);
         }
-        Ok((feed, objects, records))
+        Ok((feed, objects, records, groups))
     }
 
     /// Starts fetching fresh Element Sets in the background, if that is allowed right now.
@@ -198,6 +243,7 @@ impl Feed {
                 Some(Refreshed {
                     objects: loaded.objects,
                     records: loaded.catalogue,
+                    groups: loaded.groups,
                 })
             }
             Err(error) => {
@@ -281,6 +327,10 @@ mod tests {
             })
         }
 
+        fn fetch_group(&self, _group: Group) -> Result<String, FetchError> {
+            Ok("NORAD_CAT_ID\n25544\n".to_owned())
+        }
+
         fn fetch_catalogue(&self) -> Result<String, FetchError> {
             // One record, so a test can tell fetched records from the Snapshot's.
             Ok(
@@ -310,7 +360,7 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(1);
 
-        let (feed, objects, records) =
+        let (feed, objects, records, groups) =
             Feed::start(source.clone(), Some(Cache::at(dir.path())), now).unwrap();
 
         assert!(objects.len() > 29_000);
@@ -322,6 +372,8 @@ mod tests {
                 .all(|object| records.contains_key(&object.catalogue_number))
         );
         assert_eq!(records[&25_544].owner, "ISS");
+        // The bundled Group lists are the sizes CelesTrak published.
+        assert_eq!(Group::LISTED.map(|group| groups.len(group)), [75, 17, 154]);
         let status = feed.status(now);
         assert_eq!(status.origin, Origin::Snapshot);
         assert_eq!(status.age, hours(1));
@@ -336,7 +388,7 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, _, _) = Feed::start(source.clone(), Some(cache.clone()), now).unwrap();
+        let (mut feed, _, _, _) = Feed::start(source.clone(), Some(cache.clone()), now).unwrap();
         assert_eq!(feed.status(now).refresh, Refresh::InProgress);
 
         let refreshed = wait_for_refresh(&mut feed, now).expect("fetched Tracked Objects");
@@ -365,7 +417,7 @@ mod tests {
         let source = StubSource::new(true);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, objects, _) =
+        let (mut feed, objects, _, _) =
             Feed::start(source.clone(), Some(Cache::at(dir.path())), now).unwrap();
         assert!(wait_for_refresh(&mut feed, now).is_none());
 
@@ -388,9 +440,10 @@ mod tests {
 
         let source = StubSource::new(false);
         let now = fetched_at + hours(3);
-        let (feed, _, records) = Feed::start(source.clone(), Some(cache), now).unwrap();
+        let (feed, _, records, groups) = Feed::start(source.clone(), Some(cache), now).unwrap();
         // The cached Catalogue Records are newer than the Snapshot's, so they are used.
         assert_eq!(records[&25_544].owner, "TEST");
+        assert_eq!(groups.len(Group::Weather), 1);
 
         let status = feed.status(now);
         assert_eq!(status.origin, Origin::Fetched);
@@ -403,7 +456,7 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, _, _) = Feed::start(source.clone(), None, now).unwrap();
+        let (mut feed, _, _, _) = Feed::start(source.clone(), None, now).unwrap();
         assert_eq!(feed.status(now).refresh, Refresh::Unavailable);
         feed.request_refresh(now);
         assert_eq!(source.fetches(), 0);

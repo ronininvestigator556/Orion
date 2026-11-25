@@ -50,6 +50,16 @@ impl OrbitCamera {
         self.latitude = (self.latitude + dy * radians_per_pixel).clamp(-MAX_LATITUDE, MAX_LATITUDE);
     }
 
+    /// Turns the camera to look straight down on the point of the globe beneath
+    /// `position`, keeping its distance.
+    pub fn face(&mut self, position: Vec3) {
+        let Some(direction) = position.try_normalize() else {
+            return;
+        };
+        self.longitude = direction.y.atan2(direction.x);
+        self.latitude = direction.z.asin().clamp(-MAX_LATITUDE, MAX_LATITUDE);
+    }
+
     /// Moves towards the globe for positive `steps` and away for negative ones.
     /// Each step changes the altitude by a fixed fraction, so zooming feels even at any height.
     pub fn zoom(&mut self, steps: f32) {
@@ -120,6 +130,22 @@ mod tests {
         let mut camera = camera(0.0, 80.0, 3.0);
         camera.drag(0.0, 100_000.0, 800.0);
         assert_eq!(camera.latitude, MAX_LATITUDE);
+    }
+
+    #[test]
+    fn facing_a_position_puts_it_in_the_centre_of_the_view() {
+        let mut camera = camera(10.0, 10.0, 3.0);
+        let target = Vec3::new(-0.4, 0.7, -0.5) * 1.07;
+        camera.face(target);
+
+        let clip = camera.view_projection(1.5) * target.extend(1.0);
+        assert!((clip.x / clip.w).abs() < 1e-5 && (clip.y / clip.w).abs() < 1e-5);
+        assert_eq!(camera.distance, 3.0);
+
+        // Earth's centre is beneath nowhere, so it changes nothing.
+        let before = camera;
+        camera.face(Vec3::ZERO);
+        assert_eq!(camera, before);
     }
 
     #[test]

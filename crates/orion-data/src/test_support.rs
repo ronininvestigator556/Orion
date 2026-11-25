@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use orion_core::filter::Group;
+
 use crate::{ElementSetFiles, FetchError, Source};
 
 pub const HEADER: &str = "OBJECT_NAME,OBJECT_ID,EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,ARG_OF_PERICENTER,MEAN_ANOMALY,EPHEMERIS_TYPE,CLASSIFICATION_TYPE,NORAD_CAT_ID,ELEMENT_SET_NO,REV_AT_EPOCH,BSTAR,MEAN_MOTION_DOT,MEAN_MOTION_DDOT";
@@ -42,8 +44,15 @@ pub fn catalogue() -> String {
 pub struct StubSource {
     answer: Result<ElementSetFiles, FetchError>,
     catalogue_answer: Result<String, FetchError>,
+    group_answer: Result<String, FetchError>,
     fetches: AtomicUsize,
     catalogue_fetches: AtomicUsize,
+    group_fetches: AtomicUsize,
+}
+
+/// A member list holding one object, as every Group's answer.
+fn group_members() -> String {
+    "NORAD_CAT_ID\n25544\n".to_owned()
 }
 
 impl StubSource {
@@ -51,17 +60,21 @@ impl StubSource {
         Self {
             answer: Ok(files),
             catalogue_answer: Ok(catalogue()),
+            group_answer: Ok(group_members()),
             fetches: AtomicUsize::new(0),
             catalogue_fetches: AtomicUsize::new(0),
+            group_fetches: AtomicUsize::new(0),
         }
     }
 
     pub fn failing(error: FetchError) -> Self {
         Self {
             answer: Err(error.clone()),
-            catalogue_answer: Err(error),
+            catalogue_answer: Err(error.clone()),
+            group_answer: Err(error),
             fetches: AtomicUsize::new(0),
             catalogue_fetches: AtomicUsize::new(0),
+            group_fetches: AtomicUsize::new(0),
         }
     }
 
@@ -69,6 +82,16 @@ impl StubSource {
     pub fn with_catalogue(mut self, answer: Result<String, FetchError>) -> Self {
         self.catalogue_answer = answer;
         self
+    }
+
+    /// Changes what the Source answers when asked for any Group's members.
+    pub fn with_groups(mut self, answer: Result<String, FetchError>) -> Self {
+        self.group_answer = answer;
+        self
+    }
+
+    pub fn group_fetches(&self) -> usize {
+        self.group_fetches.load(Ordering::SeqCst)
     }
 
     pub fn catalogue_fetches(&self) -> usize {
@@ -93,6 +116,11 @@ impl Source for StubSource {
     fn fetch_catalogue(&self) -> Result<String, FetchError> {
         self.catalogue_fetches.fetch_add(1, Ordering::SeqCst);
         self.catalogue_answer.clone()
+    }
+
+    fn fetch_group(&self, _group: Group) -> Result<String, FetchError> {
+        self.group_fetches.fetch_add(1, Ordering::SeqCst);
+        self.group_answer.clone()
     }
 }
 

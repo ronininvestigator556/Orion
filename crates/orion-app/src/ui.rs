@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use orion_core::catalogue::ObjectKind;
 use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
+use orion_core::filter::{Filter, Group};
 use orion_core::time::JulianDate;
 
 use crate::feed::{Origin, Refresh, Status};
@@ -27,7 +28,8 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
         tracked,
     } = *diagnostics;
     egui::Window::new("Diagnostics")
-        .default_pos([12.0, 12.0])
+        .default_pos([770.0, 12.0])
+        .default_open(false)
         .resizable(false)
         .show(ctx, |ui| {
             ui.label(format!("{} ({})", gpu.adapter, gpu.backend));
@@ -44,6 +46,7 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
                 "{} Satellites, {} Rocket Bodies, {} Debris",
                 tracked.satellites, tracked.rocket_bodies, tracked.debris
             ));
+            ui.label(format!("{} pass the filter", tracked.shown));
             if tracked.without_position > 0 {
                 ui.label(format!("{} have no Position now", tracked.without_position));
             }
@@ -55,6 +58,107 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
                 tracked.propagation_ms
             ));
         });
+}
+
+/// The most search results the Find panel lists at once.
+pub const MAX_RESULTS: usize = 100;
+
+/// What the filter currently lets through, for the Find panel.
+pub struct Found {
+    pub shown: usize,
+    pub total: usize,
+    /// The first [`MAX_RESULTS`] matches in name order: each object's index and a
+    /// line of text naming it.
+    pub results: Vec<(usize, String)>,
+}
+
+/// Draws the Find panel, which edits `filter` in place. Returns the index of a search
+/// result the user clicked.
+pub fn draw_find(ctx: &egui::Context, filter: &mut Filter, found: &Found) -> Option<usize> {
+    let mut picked = None;
+    egui::Window::new("Find")
+        .default_pos([12.0, 12.0])
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let field = egui::TextEdit::singleline(&mut filter.text)
+                    .hint_text("Name or catalogue number")
+                    .desired_width(190.0);
+                ui.add(field);
+                if ui
+                    .add_enabled(!filter.text.is_empty(), egui::Button::new("Clear"))
+                    .clicked()
+                {
+                    filter.text.clear();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut filter.satellites, "Satellites");
+                ui.checkbox(&mut filter.rocket_bodies, "Rocket Bodies");
+                ui.checkbox(&mut filter.debris, "Debris");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut filter.low, "Low");
+                ui.checkbox(&mut filter.medium, "Medium");
+                ui.checkbox(&mut filter.geostationary, "Geostationary");
+            });
+            ui.checkbox(&mut filter.highly_elliptical, "Highly elliptical");
+
+            egui::ComboBox::from_label("Group")
+                .selected_text(filter.group.map_or("Any", group_name))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut filter.group, None, "Any");
+                    for group in Group::ALL {
+                        ui.selectable_value(&mut filter.group, Some(group), group_name(group));
+                    }
+                });
+
+            ui.separator();
+            let narrowed = *filter != Filter::default();
+            ui.horizontal(|ui| {
+                ui.label(format!("{} of {} shown", found.shown, found.total));
+                if ui
+                    .add_enabled(narrowed, egui::Button::new("Show everything"))
+                    .clicked()
+                {
+                    *filter = Filter::default();
+                }
+            });
+
+            // With nothing narrowed down, a list of every object would be no help.
+            if narrowed {
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        for (index, line) in &found.results {
+                            if ui.selectable_label(false, line).clicked() {
+                                picked = Some(*index);
+                            }
+                        }
+                        if found.shown > found.results.len() {
+                            ui.label(format!("and {} more", found.shown - found.results.len()));
+                        }
+                        if found.shown == 0 {
+                            ui.label("Nothing matches.");
+                        }
+                    });
+            }
+        });
+    picked
+}
+
+fn group_name(group: Group) -> &'static str {
+    match group {
+        Group::Weather => "Weather",
+        Group::SpaceStations => "Space stations",
+        Group::Navigation => "Navigation",
+        Group::Starlink => "Starlink",
+        Group::OneWeb => "OneWeb",
+        Group::Kuiper => "Kuiper",
+        Group::Qianfan => "Qianfan",
+        Group::Guowang => "Guowang",
+    }
 }
 
 /// What the Simulation Clock panel remembers between frames.
@@ -88,7 +192,7 @@ pub fn draw_clock(
 ) -> Option<ClockAction> {
     let mut action = None;
     egui::Window::new("Simulation Clock")
-        .default_pos([12.0, 340.0])
+        .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
         .resizable(false)
         .show(ctx, |ui| {
             let moment = clock.moment();
@@ -383,7 +487,7 @@ pub fn draw_labels(ctx: &egui::Context, labels: &[(egui::Pos2, String)]) {
 pub fn draw_element_sets(ctx: &egui::Context, status: &Status) -> bool {
     let mut refresh_requested = false;
     egui::Window::new("Element Sets")
-        .default_pos([12.0, 190.0])
+        .default_pos([364.0, 12.0])
         .resizable(false)
         .show(ctx, |ui| {
             let age = format_duration(status.age);

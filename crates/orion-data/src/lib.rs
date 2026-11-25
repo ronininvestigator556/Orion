@@ -18,6 +18,8 @@ use orion_core::catalogue::{
     parse_element_set_files,
 };
 
+use orion_core::filter::{Group, GroupLists, parse_group_members_csv};
+
 pub use cache::Cache;
 pub use source::{CelesTrak, FetchError, Source};
 
@@ -66,6 +68,8 @@ pub struct Loaded {
     pub fetched_at: SystemTime,
     /// Catalogue Records, when they were fetched along with the Element Sets.
     pub catalogue: Option<CatalogueRecords>,
+    /// Group member lists, when they were fetched along with the Catalogue Records.
+    pub groups: Option<GroupLists>,
 }
 
 /// First column of every CSV Element Set file.
@@ -108,6 +112,7 @@ impl Loaded {
             rejected: parsed.rejected,
             fetched_at,
             catalogue: None,
+            groups: None,
         })
     }
 }
@@ -177,6 +182,11 @@ pub fn refresh(
         .is_none_or(|fetched_at| is_older_than(fetched_at, now, CATALOGUE_STALE_AFTER));
     if catalogue_is_due {
         loaded.catalogue = refresh_catalogue(source, cache, now);
+        // Group lists change about as rarely, so they ride along. After a failure
+        // nothing more is asked of the source.
+        if loaded.catalogue.is_some() {
+            loaded.groups = refresh_groups(source, cache);
+        }
     }
     Ok(loaded)
 }
@@ -205,6 +215,40 @@ fn refresh_catalogue(
     Some(records)
 }
 
+/// Fetches and stores the member list of every listed Group, all or nothing.
+fn refresh_groups(source: &dyn Source, cache: &Cache) -> Option<GroupLists> {
+    let mut lists = GroupLists::default();
+    let mut texts = Vec::new();
+    for group in Group::LISTED {
+        let text = match source.fetch_group(group) {
+            Ok(text) => text,
+            Err(error) => {
+                log::warn!("could not fetch the {group:?} group: {error}");
+                return None;
+            }
+        };
+        let Some(members) = parse_group(&text) else {
+            log::warn!("the source did not return a member list for the {group:?} group");
+            return None;
+        };
+        lists.set(group, members);
+        texts.push((group, text));
+    }
+    for (group, text) in &texts {
+        if let Err(error) = cache.store_group(*group, text) {
+            log::warn!("could not store the {group:?} group: {error}");
+        }
+    }
+    Some(lists)
+}
+
+/// Reads a Group's members, or `None` if the text is not a usable member list.
+fn parse_group(text: &str) -> Option<std::collections::HashSet<u32>> {
+    parse_group_members_csv(text)
+        .ok()
+        .filter(|members| !members.is_empty())
+}
+
 fn is_older_than(obtained_at: SystemTime, now: SystemTime, limit: Duration) -> bool {
     // A time in the future means the clock was changed; treat the data as fresh.
     now.duration_since(obtained_at).is_ok_and(|age| age > limit)
@@ -214,6 +258,58 @@ fn is_older_than(obtained_at: SystemTime, now: SystemTime, limit: Duration) -> b
 mod tests {
     use super::*;
     use crate::test_support::{StubSource, catalogue, files, hours};
+
+    #[test]
+    fn group_lists_come_with_the_catalogue_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::at(dir.path());
+        let source = StubSource::succeeding(files());
+        let start = SystemTime::UNIX_EPOCH + hours(100);
+
+        let first = refresh(&source, &cache, start).unwrap();
+        let lists = first.groups.expect("group lists");
+        for group in Group::LISTED {
+            assert_eq!(lists.len(group), 1, "{group:?}");
+        }
+        assert_eq!(cache.load_groups(), Some(lists));
+        assert_eq!(source.group_fetches(), 3);
+
+        // Like the records, they are left alone until a week has passed.
+        assert!(
+            refresh(&source, &cache, start + hours(24))
+                .unwrap()
+                .groups
+                .is_none()
+        );
+        assert_eq!(source.group_fetches(), 3);
+    }
+
+    #[test]
+    fn a_group_that_cannot_be_fetched_stops_the_rest_but_not_the_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::at(dir.path());
+        let source = StubSource::succeeding(files()).with_groups(Err(FetchError::Refused(403)));
+
+        let loaded = refresh(&source, &cache, SystemTime::UNIX_EPOCH + hours(100)).unwrap();
+        assert!(loaded.catalogue.is_some());
+        assert!(loaded.groups.is_none());
+        assert!(cache.load_groups().is_none());
+        // Asked once, refused, and not asked again for the other two.
+        assert_eq!(source.group_fetches(), 1);
+    }
+
+    #[test]
+    fn no_groups_are_asked_for_when_the_catalogue_records_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = StubSource::succeeding(files()).with_catalogue(Err(FetchError::Refused(403)));
+        refresh(
+            &source,
+            &Cache::at(dir.path()),
+            SystemTime::UNIX_EPOCH + hours(100),
+        )
+        .unwrap();
+        assert_eq!(source.group_fetches(), 0);
+    }
 
     #[test]
     fn catalogue_records_come_with_the_first_refresh_and_then_weekly() {

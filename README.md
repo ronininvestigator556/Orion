@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. The Find panel searches by name or catalogue number and filters by kind, Orbit Regime and Group, such as weather satellites or Starlink. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Run it
 
@@ -16,6 +16,12 @@ To start with a Tracked Object already selected, pass its catalogue number. This
 
 ```bash
 cargo run -- --select 25544 --ground-track
+```
+
+To start with a search already typed in, use `--find`:
+
+```bash
+cargo run -- --find "noaa 2"
 ```
 
 ## Layout

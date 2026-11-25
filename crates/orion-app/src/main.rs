@@ -16,6 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Context as _;
 use glam::{DVec3, Vec2};
 use orion_core::clock::SimulationClock;
+use orion_core::filter::Filter;
 use orion_core::sun::{subsolar_point, sun_direction};
 use orion_core::time::JulianDate;
 use orion_data::{Cache, CelesTrak};
@@ -71,15 +72,18 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// What the command line asked for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Options {
     /// Catalogue number of a Tracked Object to select at launch.
     select: Option<u32>,
     /// Show the Ground Track of the selected object from launch.
     ground_track: bool,
+    /// Text to put in the Find panel's search box at launch.
+    find: Option<String>,
 }
 
-const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track]";
+const USAGE: &str =
+    "usage: orion [--select <catalogue number>] [--ground-track] [--find <name or number>]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
     let mut options = Options::default();
@@ -95,6 +99,13 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                     })?);
             }
             "--ground-track" => options.ground_track = true,
+            "--find" => {
+                options.find = Some(
+                    arguments
+                        .next()
+                        .with_context(|| format!("--find needs some text\n{USAGE}"))?,
+                );
+            }
             other => anyhow::bail!("unknown option {other:?}\n{USAGE}"),
         }
     }
@@ -121,6 +132,8 @@ struct Running {
     /// Index of the Tracked Object under the cursor.
     hovered: Option<usize>,
     show_ground_track: bool,
+    /// The filter as the Find panel shows it.
+    filter: Filter,
     /// Line segments for the current frame, kept to reuse the allocation.
     segments: Vec<Segment>,
     /// True while the left button is held after being pressed over the scene.
@@ -151,10 +164,15 @@ impl Running {
         if cache.is_none() {
             log::warn!("no cache folder is available; Element Sets will not be fetched");
         }
-        let (feed, objects, records) =
+        let (feed, objects, records, groups) =
             Feed::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
 
-        let tracked = Tracked::new(objects, records);
+        let mut tracked = Tracked::new(objects, records, groups);
+        let filter = Filter {
+            text: options.find.unwrap_or_default(),
+            ..Filter::default()
+        };
+        tracked.set_filter(filter.clone());
         let selected = options.select.and_then(|catalogue_number| {
             let index = tracked.index_of(catalogue_number);
             if index.is_none() {
@@ -177,6 +195,7 @@ impl Running {
             selected,
             hovered: None,
             show_ground_track: options.ground_track,
+            filter,
             segments: Vec::new(),
             dragging: false,
             pressed_at: None,
@@ -197,7 +216,8 @@ impl Running {
         let real_now = julian_date_now();
         let now = self.clock.advance(real_now, elapsed_ms as f64 / 1000.0);
         if let Some(refreshed) = self.feed.poll() {
-            self.tracked.replace(refreshed.objects, refreshed.records);
+            self.tracked
+                .replace(refreshed.objects, refreshed.records, refreshed.groups);
             // Indexes belong to the old set; find the selected object again by number.
             self.hovered = None;
             self.selected = self.selected.and_then(|selection| {
@@ -269,6 +289,25 @@ impl Running {
             subsolar: subsolar_point(now),
             tracked: self.tracked.summary(now),
         };
+        let found = ui::Found {
+            shown: self.tracked.matches().len(),
+            total: self.tracked.len(),
+            results: self
+                .tracked
+                .matches()
+                .iter()
+                .take(ui::MAX_RESULTS)
+                .filter_map(|&index| {
+                    let object = self.tracked.object(index)?;
+                    Some((
+                        index,
+                        format!("{}  ({})", object.name, object.catalogue_number),
+                    ))
+                })
+                .collect(),
+        };
+        let mut filter = self.filter.clone();
+        let mut found_pick = None;
         let details = selected.and_then(|index| self.tracked.details(index, now));
         let feed_status = self.feed.status(SystemTime::now());
         let mut refresh_requested = false;
@@ -279,6 +318,7 @@ impl Running {
         let clock_panel = &mut self.clock_panel;
         self.renderer.render(&self.window, &scene, |ctx, gpu| {
             ui::draw_labels(ctx, &labels);
+            found_pick = ui::draw_find(ctx, &mut filter, &found).or(found_pick);
             ui::draw(ctx, gpu, &diagnostics);
             refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
             clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
@@ -287,6 +327,14 @@ impl Running {
             }
         });
         self.show_ground_track = show_ground_track;
+        if filter != self.filter {
+            self.filter = filter.clone();
+            self.tracked.set_filter(filter);
+            // Indexes still mean the same objects; only what is on show has changed.
+        }
+        if let Some(index) = found_pick {
+            self.select_and_face(index);
+        }
         match clock_action {
             Some(ui::ClockAction::SetPaused(paused)) => self.clock.set_paused(paused),
             Some(ui::ClockAction::Faster) => self.clock.faster(),
@@ -326,6 +374,25 @@ impl Running {
             Vec2::new(cursor.x as f32, cursor.y as f32),
             PICK_REACH_POINTS * self.window.scale_factor() as f32,
         )
+    }
+
+    /// Selects a Tracked Object by index and turns the globe to bring it into view.
+    fn select_and_face(&mut self, index: usize) {
+        let Some(catalogue_number) = self
+            .tracked
+            .object(index)
+            .map(|object| object.catalogue_number)
+        else {
+            return;
+        };
+        self.selected = Some(Selection {
+            catalogue_number,
+            index,
+        });
+        let instance = self.tracked.instances().get(index);
+        if let Some(instance) = instance.filter(|instance| !instance.is_hidden()) {
+            self.camera.face(instance.position());
+        }
     }
 
     /// Selects the Tracked Object under the cursor, or clears the selection if there is none.
@@ -401,7 +468,7 @@ impl ApplicationHandler for App {
         if self.running.is_some() {
             return;
         }
-        match Running::new(event_loop, self.options) {
+        match Running::new(event_loop, self.options.clone()) {
             Ok(running) => {
                 running.window.request_redraw();
                 self.running = Some(running);
@@ -455,13 +522,23 @@ mod tests {
             Options {
                 select: Some(25_544),
                 ground_track: true,
+                find: None,
             }
+        );
+        assert_eq!(
+            parse(&["--find", "noaa 2"]).unwrap().find.as_deref(),
+            Some("noaa 2")
         );
     }
 
     #[test]
     fn bad_options_are_explained() {
-        for arguments in [&["--select"][..], &["--select", "station"], &["--wat"]] {
+        for arguments in [
+            &["--select"][..],
+            &["--select", "station"],
+            &["--find"],
+            &["--wat"],
+        ] {
             let error = parse(arguments).unwrap_err();
             assert!(format!("{error:#}").contains("usage: orion"), "{error:#}");
         }
