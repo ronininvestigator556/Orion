@@ -1,8 +1,27 @@
 # Orion
 
-A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
+A desktop app that shows publicly available information about the world on a 3D globe, in Layers you switch on and off: what is in orbit, and places, energy, traffic and weather on and above the surface. It shows places and vehicles as their Sources publish them, and is not a tool for following individuals.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers under their Themes, each with a switch, and a search box across the ones that are on. Under Places there are airports, licence plate cameras, data centres and military sites. Under Energy there are power plants by what they run on, pipelines drawn as their routes, refineries and oil sites, offshore platforms, mines by what they dig, and dams. Under Traffic there are flights: aircraft in the air around the middle of the view, refreshed every few minutes and moved along their headings in between; and ships in the northern Baltic, the one sea whose ships are published for anyone to use without a key. Under Weather there are earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts, and pictures laid over the Base Map: each day's clouds, the view from three weather satellites every ten minutes, rain and snow, and sea surface temperature. The pictures follow the Simulation Clock back as far as NASA keeps them. You can also open a file of your own places as an Imported Layer: drop a GeoJSON, KML or CSV file on the window, or give its path in the sidebar. It is read where it is and sent nowhere. Which Layers are on is remembered between launches. Every Layer is fetched only once it is switched on, and the dots of those that have them can be clicked for details. From far away a Layer of many places gathers into Clusters, each showing how many places it stands for; clicking one moves in on it. The satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early, and moving fast. Version 0.1.0 showed satellites only; everything else below is newer and has not been released yet.
+
+## What it shows
+
+The globe has a live day and night side and the real naked-eye stars behind it. Drag to turn it and scroll to zoom, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names.
+
+A sidebar lists the Layers under their Themes, each with a switch, a filter and a line saying where its data came from. Nothing is fetched for a Layer until it is switched on, and which Layers are on is remembered between launches.
+
+- **Orbit.** About 29,000 Tracked Objects at their computed Positions. Click one for its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. Filter by kind, Orbit Regime and Group, such as weather satellites or Starlink.
+- **Places.** Airports, licence plate cameras, data centres and military sites.
+- **Energy.** Power plants by what they run on, pipelines drawn as their routes, refineries and oil sites, offshore platforms, mines by what they dig, and dams.
+- **Traffic.** Flights around the middle of the view, refreshed every few minutes and moved along their headings in between. Ships in the northern Baltic, the one sea whose ships are published for anyone to use without a key.
+- **Weather.** Earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts. And pictures laid over the Base Map: each day's clouds, the view from three weather satellites every ten minutes, rain and snow, and sea surface temperature.
+- **Imported.** A file of your own places: drop a GeoJSON, KML or CSV file on the window, or give its path in the sidebar. It is read where it is and sent nowhere.
+
+A search box looks across every Layer that is on. From far away a Layer of many places gathers into Clusters, each showing how many places it stands for; clicking one moves in on it.
+
+A Simulation Clock pauses, speeds up, reverses or jumps the moment on show, within two weeks of now. Satellites follow it anywhere; earthquakes and the weather pictures follow it back as far as their Sources keep them; live Layers such as flights show only the present, and say so when the clock is elsewhere. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, which keeps a selected satellite, flight or ship centred.
+
+Element Sets for satellites are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Download
 
