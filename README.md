@@ -2,7 +2,7 @@
 
 A desktop app that shows publicly available information about the world on a 3D globe, in Layers you switch on and off: what is in orbit, and places, energy, traffic and weather on and above the surface. It shows places and vehicles as their Sources publish them, and is not a tool for following individuals.
 
-**Status:** early, and moving fast. Version 0.1.0 showed satellites only; everything else below is newer and has not been released yet.
+**Status:** early, and moving fast. Version 0.1.0 showed satellites only; version 0.2.0 adds everything else below.
 
 ## What it shows
 
