@@ -588,7 +588,22 @@ impl Layer for FeatureLayer {
         let age = self
             .fetched_at
             .map(|at| format_duration(now.duration_since(at).unwrap_or_default()));
+        // An Extract that is not there yet is not a fault on the line: the project's
+        // job that publishes Extracts has not run, and trying again will not help.
+        let unpublished = self
+            .spec
+            .listing
+            .url
+            .contains("/releases/download/extracts/")
+            && self
+                .failure
+                .as_deref()
+                .is_some_and(|reason| reason.contains("404"));
         let mut text = match (&self.failure, &age) {
+            (Some(_), None) if unpublished => "This Layer's Extract has not been published \
+                 yet. The project's Extracts job has to run once first: see Extracts in the \
+                 README."
+                .to_owned(),
             (Some(reason), Some(age)) => format!(
                 "Could not reach {source}: {reason}. Showing what was fetched {age} ago; trying again shortly."
             ),
@@ -888,6 +903,45 @@ mod tests {
     };
 
     #[test]
+    fn an_extract_that_is_not_published_yet_says_so() {
+        static EXTRACT: Spec = Spec {
+            name: "Test extract",
+            theme: Theme::Places,
+            listing: Listing {
+                url: "https://example.invalid/releases/download/extracts/test.tsv",
+                ..SPEC.listing
+            },
+            classes: &[Class::new("All", [255, 255, 255])],
+            coverage: TimeCoverage::AnyMoment,
+            show: Show::Always,
+            dot_scale: |_| 1.0,
+            note: "",
+            attribution: "",
+            cluster: false,
+            routes: false,
+        };
+        let stub = Stub::answering(vec![Err(FetchError::Refused(404))]);
+        let mut layer = FeatureLayer::new(&EXTRACT, stub as Arc<dyn Fetcher>, None);
+        layer.set_on(true);
+        let now = SystemTime::now();
+        settle(&mut layer, now);
+        let status = layer.status(now).text;
+        assert!(status.contains("has not been published yet"), "{status}");
+
+        // Any other Layer, or any other failure, is reported as it is.
+        let stub = Stub::answering(vec![Err(FetchError::Refused(404))]);
+        let mut other = layer_from(&stub);
+        other.set_on(true);
+        settle(&mut other, now);
+        assert!(
+            other
+                .status(now)
+                .text
+                .starts_with("Could not reach Test Source")
+        );
+    }
+
+    #[test]
     fn an_imported_layer_shows_a_files_places_and_fetches_nothing() {
         let mut point = Feature::at("a", "Depot", 51.5, -0.12);
         point.attributes = "Kind\tDepot\n".to_owned();
@@ -1132,6 +1186,10 @@ mod tests {
 
     fn layer(stub: &Arc<Stub>, cache: Option<Cache>) -> FeatureLayer {
         FeatureLayer::new(&SPEC, Arc::clone(stub) as Arc<dyn Fetcher>, cache)
+    }
+
+    fn layer_from(stub: &Arc<Stub>) -> FeatureLayer {
+        layer(stub, None)
     }
 
     /// Runs the Layer until the fetch in flight has been taken in.
