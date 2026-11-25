@@ -14,6 +14,7 @@
 
 pub mod catalogue;
 pub mod clock;
+pub mod cluster;
 pub mod codes;
 pub mod feature;
 pub mod filter;

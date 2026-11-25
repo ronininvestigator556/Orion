@@ -38,6 +38,7 @@ pub static AIRPORTS: Spec = Spec {
     },
     note: "Small airports, heliports and seaplane bases are in the filter.",
     attribution: "",
+    cluster: true,
 };
 
 /// Cameras that read licence plates. A fixed piece of equipment at a mapped place;
@@ -57,6 +58,7 @@ pub static CAMERAS: Spec = Spec {
     note: "As mapped by OpenStreetMap's volunteers. Many cameras are not mapped, and \
            some that are mapped have since been removed.",
     attribution: OPENSTREETMAP,
+    cluster: true,
 };
 
 pub static DATA_CENTRES: Spec = Spec {
@@ -69,6 +71,7 @@ pub static DATA_CENTRES: Spec = Spec {
     dot_scale: |_| 1.6,
     note: VOLUNTEER_MAPPED,
     attribution: OPENSTREETMAP,
+    cluster: true,
 };
 
 pub static MILITARY_SITES: Spec = Spec {
@@ -85,6 +88,7 @@ pub static MILITARY_SITES: Spec = Spec {
     dot_scale: |_| 1.5,
     note: VOLUNTEER_MAPPED,
     attribution: OPENSTREETMAP,
+    cluster: true,
 };
 
 /// Oil and gas platforms at sea. Listed under Energy with the rest of that industry.
@@ -98,6 +102,7 @@ pub static OFFSHORE_PLATFORMS: Spec = Spec {
     dot_scale: |_| 1.3,
     note: VOLUNTEER_MAPPED,
     attribution: OPENSTREETMAP,
+    cluster: true,
 };
 
 /// Every Layer in this module, in the order they are listed.

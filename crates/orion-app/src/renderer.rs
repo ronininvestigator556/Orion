@@ -43,6 +43,8 @@ pub struct Scene<'a> {
     pub sun_direction: Vec3,
     /// One dot per Feature on show.
     pub objects: &'a [Instance],
+    /// One mark per Cluster on show.
+    pub clusters: &'a [Instance],
     /// Orbit Paths and Ground Tracks.
     pub lines: &'a [Segment],
     /// How far, in radians, the Earth-fixed frame is turned east of the stars.
@@ -89,6 +91,7 @@ pub struct Renderer {
     reference: ReferenceLines,
     stars: Stars,
     lines: Lines,
+    clusters: Objects,
     objects: Objects,
 
     egui_ctx: egui::Context,
@@ -244,6 +247,7 @@ impl Renderer {
         let reference = ReferenceLines::new(&device, &queue, scene_format)?;
         let stars = Stars::new(&device, scene_format)?;
         let lines = Lines::new(&device, scene_format);
+        let clusters = Objects::new(&device, scene_format);
         let objects = Objects::new(&device, scene_format);
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
@@ -261,6 +265,7 @@ impl Renderer {
             reference,
             stars,
             lines,
+            clusters,
             objects,
             egui_ctx,
             egui_renderer,
@@ -376,6 +381,8 @@ impl Renderer {
         );
         self.lines
             .update(&self.device, &self.queue, &view, scene.lines);
+        self.clusters
+            .update(&self.device, &self.queue, &view, scene.clusters);
         self.objects
             .update(&self.device, &self.queue, &view, scene.objects);
 
@@ -449,6 +456,8 @@ impl Renderer {
             self.reference.draw(&mut pass);
             // Lines go under the dots so a dot on a line stays readable.
             self.lines.draw(&mut pass);
+            // Clusters lie on the ground, so everything else is drawn over them.
+            self.clusters.draw(&mut pass);
             self.objects.draw(&mut pass);
         }
 

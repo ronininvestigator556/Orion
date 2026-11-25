@@ -38,7 +38,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use camera::{CameraRig, ViewFrame};
-use layer::{FeatureRef, Layer, Layers};
+use layer::{FeatureRef, Layer, LayerView, Layers};
 use lines::Segment;
 use orbit_layer::OrbitLayer;
 use picking::PickView;
@@ -48,6 +48,12 @@ use renderer::{Renderer, Scene};
 const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
 /// How close, in logical points, the cursor must be to a dot to hover or select it.
 const PICK_REACH_POINTS: f32 = 8.0;
+/// How close, in logical points, the cursor must be to the middle of a Cluster to click it.
+const CLUSTER_REACH_POINTS: f32 = 14.0;
+/// The most Clusters whose counts are written out at once.
+const MAX_CLUSTER_COUNTS: usize = 400;
+/// Clicking a Cluster brings the camera to this fraction of its height above the ground.
+const CLUSTER_ZOOM: f32 = 0.35;
 /// A press and release less than this many logical points apart is a click, not a drag.
 const CLICK_SLOP_POINTS: f64 = 4.0;
 
@@ -255,6 +261,8 @@ struct Session {
     place_names: reference::PlaceNames,
     /// Line segments for the current frame, kept to reuse the allocation.
     segments: Vec<Segment>,
+    /// The marks of the Clusters on show, as of the last frame.
+    cluster_dots: Vec<objects::Instance>,
     /// True while the left button is held after being pressed over the scene.
     dragging: bool,
     /// Where the left button went down over the scene, to tell a click from a drag.
@@ -404,6 +412,7 @@ impl Session {
             base_map: basemap::BaseMapChoices::default(),
             place_names: reference::PlaceNames::bundled(),
             segments: Vec::new(),
+            cluster_dots: Vec::new(),
             dragging: false,
             pressed_at: None,
             cursor: None,
@@ -460,6 +469,20 @@ impl Session {
         }
 
         let selected = self.selected.map(|selection| selection.feature);
+        // How much of the globe a point of the screen spans decides which Layers gather
+        // into Clusters.
+        let altitude = self
+            .rig
+            .scene_camera(self.sidereal_angle)
+            .position()
+            .length()
+            - 1.0;
+        let radians_per_pixel = altitude.max(0.0) * 2.0 * (camera::FOV_Y / 2.0).tan()
+            / self.renderer.size().height.max(1) as f32;
+        let radians_per_point = radians_per_pixel * self.renderer.scale_factor() as f32;
+        self.layers.set_view(&LayerView {
+            degrees_per_point: f64::from(radians_per_point.to_degrees()),
+        });
         self.layers.update(now, real_now, selected, self.hovered);
 
         // Follow Mode needs something to follow, and moves the camera before it is used.
@@ -496,6 +519,30 @@ impl Session {
                 // A dot behind the sidebar is covered by it, and its name should be too.
                 if points.x > sidebar::WIDTH {
                     labels.push((egui::pos2(points.x, points.y), name.to_owned()));
+                }
+            }
+        }
+
+        // A mark for each Cluster, larger the more it stands for, and its count
+        // written on it where it is in view.
+        self.cluster_dots.clear();
+        let mut cluster_counts = Vec::new();
+        for mark in self.layers.clusters() {
+            let [r, g, b] = mark.color;
+            let radius_points = 5.5 + 2.0 * (mark.count as f32).log10();
+            self.cluster_dots.push(
+                objects::Instance::new(mark.position, [r, g, b, 235], objects::Marks::default())
+                    .scaled(radius_points / objects::DOT_RADIUS_POINTS),
+            );
+            if cluster_counts.len() < MAX_CLUSTER_COUNTS
+                && let Some(pixels) = pick_view.project(mark.position)
+            {
+                let points = pixels / scale_factor;
+                if points.x > sidebar::WIDTH {
+                    cluster_counts.push((
+                        egui::pos2(points.x, points.y),
+                        orion_core::cluster::format_count(mark.count),
+                    ));
                 }
             }
         }
@@ -555,6 +602,7 @@ impl Session {
             camera_position: pick_view.camera_position,
             sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
             objects: &dots,
+            clusters: &self.cluster_dots,
             lines: &self.segments,
             sidereal_angle: self.sidereal_angle,
             base_map: self.base_map,
@@ -568,6 +616,7 @@ impl Session {
             let ctx = ui.ctx().clone();
             // Place names first, so a Feature's name is drawn over them.
             ui::draw_place_names(&ctx, &place_labels);
+            ui::draw_cluster_counts(&ctx, &cluster_counts);
             ui::draw_labels(&ctx, &labels);
             ui::draw_credits(&ctx, &credits);
             ui::draw_view(&ctx, &mut view_choices, can_follow);
@@ -678,20 +727,30 @@ impl Session {
 
     fn select_and_face(&mut self, feature: FeatureRef) {
         self.select(feature);
-        let position = self
-            .layers
-            .dot(feature)
-            .filter(|dot| !dot.is_hidden())
-            .map(|dot| dot.position());
-        if let Some(position) = position {
+        if let Some(position) = self.layers.position(feature) {
             self.rig.face(position, self.sidereal_angle);
         }
     }
 
     /// Selects the Feature under the cursor, or clears the selection if there is none.
     fn click(&mut self, cursor: PhysicalPosition<f64>) {
-        match self.pick(&self.pick_view(), cursor) {
-            Some(feature) => self.select(feature),
+        let view = self.pick_view();
+        if let Some(feature) = self.pick(&view, cursor) {
+            self.select(feature);
+            return;
+        }
+        // A click on a Cluster moves in on it, far enough to start breaking it up.
+        let on_cluster = view.pick(
+            &self.cluster_dots,
+            Vec2::new(cursor.x as f32, cursor.y as f32),
+            CLUSTER_REACH_POINTS * self.renderer.scale_factor() as f32,
+        );
+        match on_cluster.and_then(|index| self.cluster_dots.get(index)) {
+            Some(mark) => {
+                let altitude = view.camera_position.length() - 1.0;
+                self.rig.face(mark.position(), self.sidereal_angle);
+                self.rig.set_altitude(altitude * CLUSTER_ZOOM);
+            }
             None => self.selected = None,
         }
     }

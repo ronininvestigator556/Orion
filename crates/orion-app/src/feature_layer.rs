@@ -4,11 +4,13 @@
 //! Nothing is fetched while such a Layer is off. Once it is on, its listing is fetched
 //! in the background and again each time the copy on hand grows stale.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime};
 
 use glam::Vec3;
+use orion_core::cluster;
 use orion_core::feature::Feature;
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
@@ -16,7 +18,7 @@ use orion_data::Cache;
 use orion_data::listing::{Fetcher, Listing, ListingError, cached_listing, fetch_listing};
 
 use crate::feed::Refresh;
-use crate::layer::{Highlight, Layer, LayerStatus};
+use crate::layer::{ClusterMark, Highlight, Layer, LayerStatus, LayerView};
 use crate::lines::Segment;
 use crate::objects::{Instance, Marks};
 use crate::reference::{on_globe, push_ground_line};
@@ -26,6 +28,12 @@ use crate::ui::format_duration;
 const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// How long after a failed fetch the next is tried.
 const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+/// How far apart, in logical points, Clusters are meant to sit on screen: at most
+/// this, and at least half of it.
+const CLUSTER_SPACING_POINTS: f64 = 48.0;
+/// A Layer showing fewer Features than this is never gathered into Clusters: its
+/// dots can be told apart from any distance.
+const CLUSTER_ABOVE: usize = 200;
 /// Colour of the outline drawn for the selected Feature.
 const OUTLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
 /// The most letters of a Feature's name used as the title of its card.
@@ -88,6 +96,9 @@ pub struct Spec {
     /// Credit that must stay on screen while the Layer is on, where its Source asks
     /// for that; empty otherwise.
     pub attribution: &'static str,
+    /// Whether Features too close together to tell apart are gathered into Clusters.
+    /// Only for places that stay put: `show` must be [`Show::Always`].
+    pub cluster: bool,
 }
 
 /// Converts a screen colour to the linear colour the dot shader works in.
@@ -115,8 +126,17 @@ pub struct FeatureLayer {
     /// Counts every change to which Features are listed, so dots that do not depend
     /// on the moment are only worked out again when something has changed.
     generation: u64,
-    /// The highlight and generation the dots were last worked out for.
-    dots_for: Option<(Highlight, u64)>,
+    /// The highlight, generation and Cluster level the dots were last worked out for.
+    dots_for: Option<(Highlight, u64, Option<u8>)>,
+    /// The level of the grid that suits the view, or `None` when the view is close
+    /// enough to tell Features apart.
+    cluster_level: Option<u8>,
+    clusters: Vec<ClusterMark>,
+    /// Which Features are inside a Cluster and so have no dot of their own. Empty
+    /// when nothing is clustered.
+    clustered: Vec<bool>,
+    /// The generation and level the Clusters were last worked out for.
+    clusters_for: Option<(u64, Option<u8>)>,
     /// When the Features on hand were fetched.
     fetched_at: Option<SystemTime>,
     /// True once the cache has been looked in for an earlier copy.
@@ -144,6 +164,10 @@ impl FeatureLayer {
             dots: Vec::new(),
             generation: 0,
             dots_for: None,
+            cluster_level: None,
+            clusters: Vec::new(),
+            clustered: Vec::new(),
+            clusters_for: None,
             fetched_at: None,
             looked_in_cache: false,
             in_flight: None,
@@ -270,10 +294,71 @@ impl FeatureLayer {
         }
     }
 
+    /// Gathers the Features on show into Clusters at the level that suits the view,
+    /// if this Layer does that and has enough of them.
+    fn recluster(&mut self) {
+        let wanted = (self.generation, self.cluster_level);
+        if self.clusters_for == Some(wanted) {
+            return;
+        }
+        self.clusters_for = Some(wanted);
+        self.clusters.clear();
+        self.clustered.clear();
+        let level = match self.cluster_level {
+            Some(level)
+                if self.spec.cluster
+                    && self.spec.show == Show::Always
+                    && self.listed_count >= CLUSTER_ABOVE =>
+            {
+                level
+            }
+            _ => return,
+        };
+
+        // For each square of the grid: the sum of its Features' positions and how many.
+        let mut squares: HashMap<cluster::Cell, (Vec3, u32)> = HashMap::new();
+        let cells: Vec<Option<cluster::Cell>> = self
+            .features
+            .iter()
+            .zip(&self.listed)
+            .map(|(feature, listed)| {
+                listed.then(|| cluster::cell(feature.latitude_deg, feature.longitude_deg, level))
+            })
+            .collect();
+        for (cell, position) in cells.iter().zip(&self.positions) {
+            if let Some(cell) = cell {
+                let square = squares.entry(*cell).or_insert((Vec3::ZERO, 0));
+                square.0 += *position;
+                square.1 += 1;
+            }
+        }
+        let [r, g, b, _] = self.swatch();
+        self.clusters = squares
+            .values()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(sum, count)| ClusterMark {
+                position: sum.normalize_or_zero(),
+                count: *count,
+                color: [r, g, b],
+            })
+            .collect();
+        // A stable order, so the marks do not shuffle from one frame to the next.
+        self.clusters.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.position.x.total_cmp(&b.position.x))
+        });
+        self.clustered = cells
+            .iter()
+            .map(|cell| cell.is_some_and(|cell| squares[&cell].1 >= 2))
+            .collect();
+    }
+
     fn rebuild_dots(&mut self, at: JulianDate, highlight: Highlight) {
+        self.recluster();
         // Places that stay put look the same from one frame to the next unless the
-        // filter, the search, the data or the highlight has changed.
-        let wanted = (highlight, self.generation);
+        // filter, the search, the data, the highlight or the Clusters have changed.
+        let wanted = (highlight, self.generation, self.cluster_level);
         if self.spec.show == Show::Always
             && self.dots_for == Some(wanted)
             && self.dots.len() == self.features.len()
@@ -295,6 +380,12 @@ impl FeatureLayer {
                 let Some(opacity) = self.opacity(feature, at).filter(|_| self.listed[index]) else {
                     return Instance::HIDDEN;
                 };
+                // Inside a Cluster a Feature has no dot of its own, unless it is the
+                // one selected, which must stay findable.
+                let in_cluster = self.clustered.get(index).copied().unwrap_or(false);
+                if in_cluster && highlight.selected != Some(index) {
+                    return Instance::HIDDEN;
+                }
                 let [r, g, b] = colors
                     .get(usize::from(feature.class))
                     .copied()
@@ -338,6 +429,9 @@ impl Layer for FeatureLayer {
         if !on {
             self.dots.clear();
             self.dots_for = None;
+            self.clusters.clear();
+            self.clustered.clear();
+            self.clusters_for = None;
         }
     }
 
@@ -491,6 +585,18 @@ impl Layer for FeatureLayer {
     fn attribution(&self) -> Option<&'static str> {
         (!self.spec.attribution.is_empty()).then_some(self.spec.attribution)
     }
+
+    fn set_view(&mut self, view: &LayerView) {
+        self.cluster_level = cluster::level_for(view.degrees_per_point, CLUSTER_SPACING_POINTS);
+    }
+
+    fn clusters(&self) -> &[ClusterMark] {
+        &self.clusters
+    }
+
+    fn position(&self, index: usize) -> Option<Vec3> {
+        self.positions.get(index).copied()
+    }
 }
 
 #[cfg(test)]
@@ -586,6 +692,7 @@ mod tests {
         dot_scale: |_| 2.0,
         note: "Only a test.",
         attribution: "",
+        cluster: false,
     };
 
     /// The same events as places that stay put, with the second class filtered out
@@ -603,7 +710,109 @@ mod tests {
         dot_scale: |_| 1.0,
         note: "",
         attribution: "Test credit",
+        cluster: true,
     };
+
+    /// Three hundred places: a tight knot of 250 near Paris, 49 strung along the
+    /// equator a degree apart, and one alone in the far south.
+    fn many_places() -> String {
+        let mut lines = Vec::new();
+        for index in 0..250 {
+            let step = f64::from(index) * 0.0004;
+            lines.push(format!("Knot {index},0,0,{},{}", 48.8 + step, 2.3 + step));
+        }
+        for index in 0..49 {
+            lines.push(format!("String {index},0,0,0.5,{}", f64::from(index) + 0.5));
+        }
+        lines.push("Alone,0,0,-60.5,100.5".to_owned());
+        lines.join("\n")
+    }
+
+    fn clustering_layer(text: &'static str) -> FeatureLayer {
+        let stub = Stub::answering(vec![Ok(text)]);
+        let mut layer = FeatureLayer::new(&PLACES, stub as Arc<dyn Fetcher>, None);
+        layer.class_on[1] = true;
+        layer.set_on(true);
+        settle(&mut layer, SystemTime::now());
+        layer
+    }
+
+    fn look_from(layer: &mut FeatureLayer, degrees_per_point: f64, highlight: Highlight) {
+        layer.set_view(&LayerView { degrees_per_point });
+        layer.rebuild_dots(start(), highlight);
+    }
+
+    #[test]
+    fn from_far_away_crowded_places_become_clusters() {
+        let text: &'static str = Box::leak(many_places().into_boxed_str());
+        let mut layer = clustering_layer(text);
+        assert_eq!(layer.counts(), (300, 300));
+
+        // From the default distance, squares are 2.8 degrees across: the knot is one
+        // Cluster, and the string falls into a Cluster every two or three places.
+        look_from(&mut layer, 0.065, Highlight::default());
+        let clusters = layer.clusters().to_vec();
+        assert_eq!(clusters[0].count, 250);
+        assert!(clusters[0].position.dot(on_globe([2.35, 48.85])) > 0.999_99);
+        assert!(clusters.len() > 10, "{}", clusters.len());
+        let in_clusters: u32 = clusters.iter().map(|cluster| cluster.count).sum();
+        let dots = layer.dots().iter().filter(|dot| !dot.is_hidden()).count();
+        // Every place is either in a Cluster or a dot of its own, never both.
+        assert_eq!(in_clusters as usize + dots, 300);
+        assert!(shown(&layer).contains(&"Alone"));
+        assert!(!shown(&layer).contains(&"Knot 0"));
+    }
+
+    #[test]
+    fn clusters_break_up_as_the_view_comes_closer() {
+        let text: &'static str = Box::leak(many_places().into_boxed_str());
+        let mut layer = clustering_layer(text);
+        look_from(&mut layer, 0.065, Highlight::default());
+        let far = layer.clusters().len();
+
+        // Closer, the string along the equator comes apart into dots.
+        look_from(&mut layer, 0.005, Highlight::default());
+        assert!(layer.clusters().len() < far);
+        assert!(shown(&layer).contains(&"String 7"));
+        assert!(!shown(&layer).contains(&"Knot 0"));
+
+        // Close enough to tell places apart, there are no Clusters at all.
+        look_from(&mut layer, 0.000_1, Highlight::default());
+        assert!(layer.clusters().is_empty());
+        assert_eq!(shown(&layer).len(), 300);
+    }
+
+    #[test]
+    fn the_selected_feature_keeps_its_dot_inside_a_cluster() {
+        let text: &'static str = Box::leak(many_places().into_boxed_str());
+        let mut layer = clustering_layer(text);
+        let highlight = Highlight {
+            selected: Some(3),
+            hovered: None,
+        };
+        look_from(&mut layer, 0.065, highlight);
+        assert!(shown(&layer).contains(&"Knot 3"));
+        assert!(!shown(&layer).contains(&"Knot 4"));
+        assert_eq!(layer.clusters()[0].count, 250);
+        assert_eq!(layer.position(3), Some(layer.positions[3]));
+    }
+
+    #[test]
+    fn a_layer_with_few_features_on_show_is_never_clustered() {
+        let text: &'static str = Box::leak(many_places().into_boxed_str());
+        let mut layer = clustering_layer(text);
+        // The search leaves the 49 along the equator, under the threshold.
+        layer.set_search("string");
+        look_from(&mut layer, 0.065, Highlight::default());
+        assert!(layer.clusters().is_empty());
+        assert_eq!(shown(&layer).len(), 49);
+
+        // And the three test events never cluster, however far away.
+        let mut small = clustering_layer(EVENTS);
+        look_from(&mut small, 1.0, Highlight::default());
+        assert!(small.clusters().is_empty());
+        assert_eq!(shown(&small).len(), 3);
+    }
 
     #[test]
     fn places_are_shown_at_any_moment_and_some_classes_start_hidden() {

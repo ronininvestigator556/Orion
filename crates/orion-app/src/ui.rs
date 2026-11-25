@@ -430,6 +430,22 @@ pub fn draw_place_names(ctx: &egui::Context, labels: &[PlaceLabel<'_>]) {
     }
 }
 
+/// Writes each Cluster's count on its mark. Positions are in logical points.
+pub fn draw_cluster_counts(ctx: &egui::Context, counts: &[(egui::Pos2, String)]) {
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let font = egui::FontId::proportional(10.0);
+    for (position, count) in counts {
+        // Dark on the mark's own bright colour.
+        painter.text(
+            *position,
+            egui::Align2::CENTER_CENTER,
+            count,
+            font.clone(),
+            egui::Color32::from_rgb(10, 12, 20),
+        );
+    }
+}
+
 /// Draws the credits that must stay on screen, small, along the bottom of the scene.
 pub fn draw_credits(ctx: &egui::Context, credits: &str) {
     if credits.is_empty() {

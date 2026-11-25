@@ -3,6 +3,7 @@
 use std::ops::Range;
 use std::time::SystemTime;
 
+use glam::Vec3;
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
 
@@ -30,7 +31,25 @@ pub struct Toggle {
     pub on: bool,
 }
 
-/// One kind of thing from one kind of Source, shown or hidden as a whole.
+/// What a Layer may need to know about the view to decide how to draw itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerView {
+    /// How much of the globe, in degrees, one logical point of the screen spans
+    /// straight below the camera.
+    pub degrees_per_point: f64,
+}
+
+/// A Cluster: one mark standing for many nearby Features of one Layer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClusterMark {
+    /// The middle of its Features, on the unit sphere in the Earth-fixed frame.
+    pub position: Vec3,
+    /// How many Features it stands for.
+    pub count: u32,
+    /// Linear colour, taken from its Layer.
+    pub color: [u8; 3],
+}
+
 /// Where a Layer's data came from and how fresh it is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerStatus {
@@ -40,6 +59,7 @@ pub struct LayerStatus {
     pub refresh: Option<Refresh>,
 }
 
+/// One kind of thing from one kind of Source, shown or hidden as a whole.
 pub trait Layer {
     fn name(&self) -> &'static str;
     fn theme(&self) -> Theme;
@@ -108,6 +128,22 @@ pub trait Layer {
     /// Credit that must stay on screen while the Layer is on, where its Source asks
     /// for that.
     fn attribution(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Tells the Layer how close the view is, before `update`. A Layer that gathers
+    /// its Features into Clusters from far away decides by this.
+    fn set_view(&mut self, _view: &LayerView) {}
+
+    /// The Clusters standing in for Features too close together to tell apart, as of
+    /// the last `update`. A Feature inside one has no dot of its own.
+    fn clusters(&self) -> &[ClusterMark] {
+        &[]
+    }
+
+    /// Where a Feature is, on the unit sphere or above it, whether or not it has a
+    /// dot of its own just now.
+    fn position(&self, _index: usize) -> Option<Vec3> {
         None
     }
 }
@@ -195,6 +231,35 @@ impl Layers {
             }
             self.ranges.push(start..self.dots.len());
         }
+    }
+
+    /// Tells every Layer how close the view is. Call before [`Self::update`].
+    pub fn set_view(&mut self, view: &LayerView) {
+        for index in 0..self.len() {
+            if let Some(layer) = self.get_mut(index) {
+                layer.set_view(view);
+            }
+        }
+    }
+
+    /// The Clusters of every Layer on show.
+    pub fn clusters(&self) -> impl Iterator<Item = &ClusterMark> {
+        (0..self.len())
+            .filter(|index| {
+                self.ranges
+                    .get(*index)
+                    .is_some_and(|range| !range.is_empty())
+            })
+            .filter_map(|index| self.get(index))
+            .flat_map(|layer| layer.clusters())
+    }
+
+    /// Where a Feature is, whether or not it has a dot of its own just now.
+    pub fn position(&self, feature: FeatureRef) -> Option<Vec3> {
+        self.dot(feature)
+            .filter(|dot| !dot.is_hidden())
+            .map(|dot| dot.position())
+            .or_else(|| self.get(feature.layer)?.position(feature.index))
     }
 
     /// Every dot on show, as of the last `update`.

@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 /// Radius of a dot in logical points; multiplied by the display's scale factor for pixels.
-const DOT_RADIUS_POINTS: f32 = 1.5;
+pub const DOT_RADIUS_POINTS: f32 = 1.5;
 
 /// One dot. The order of instances is the caller's, so an instance's index can identify
 /// the Feature it stands for.
