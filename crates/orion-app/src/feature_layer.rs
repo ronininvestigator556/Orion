@@ -21,6 +21,7 @@ use crate::feed::Refresh;
 use crate::layer::{ClusterMark, Highlight, Layer, LayerStatus, LayerView};
 use crate::lines::Segment;
 use crate::objects::{Instance, Marks};
+use crate::picking::PickView;
 use crate::reference::{on_globe, push_ground_line};
 use crate::ui::format_duration;
 
@@ -34,6 +35,8 @@ const CLUSTER_SPACING_POINTS: f64 = 48.0;
 /// A Layer showing fewer Features than this is never gathered into Clusters: its
 /// dots can be told apart from any distance.
 const CLUSTER_ABOVE: usize = 200;
+/// How opaque the lines of routes are.
+const ROUTE_OPACITY: f32 = 0.85;
 /// Colour of the outline drawn for the selected Feature.
 const OUTLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
 /// The most letters of a Feature's name used as the title of its card.
@@ -99,6 +102,8 @@ pub struct Spec {
     /// Whether Features too close together to tell apart are gathered into Clusters.
     /// Only for places that stay put: `show` must be [`Show::Always`].
     pub cluster: bool,
+    /// Whether the Features are routes, drawn as their lines and not as dots.
+    pub routes: bool,
 }
 
 /// Converts a screen colour to the linear colour the dot shader works in.
@@ -137,6 +142,12 @@ pub struct FeatureLayer {
     clustered: Vec<bool>,
     /// The generation and level the Clusters were last worked out for.
     clusters_for: Option<(u64, Option<u8>)>,
+    /// The lines of every route on show, for a Layer of routes.
+    route_segments: Arc<Vec<Segment>>,
+    /// Which Feature each of those segments belongs to.
+    route_owners: Vec<u32>,
+    /// The generation the routes were last worked out for.
+    routes_for: Option<u64>,
     /// When the Features on hand were fetched.
     fetched_at: Option<SystemTime>,
     /// True once the cache has been looked in for an earlier copy.
@@ -168,6 +179,9 @@ impl FeatureLayer {
             clusters: Vec::new(),
             clustered: Vec::new(),
             clusters_for: None,
+            route_segments: Arc::default(),
+            route_owners: Vec::new(),
+            routes_for: None,
             fetched_at: None,
             looked_in_cache: false,
             in_flight: None,
@@ -354,7 +368,43 @@ impl FeatureLayer {
             .collect();
     }
 
+    /// Lays out the lines of every route on show, for a Layer of routes.
+    fn rebuild_routes(&mut self) {
+        if !self.spec.routes || self.routes_for == Some(self.generation) {
+            return;
+        }
+        self.routes_for = Some(self.generation);
+        let colors: Vec<[f32; 4]> = self
+            .spec
+            .classes
+            .iter()
+            .map(|class| {
+                let [r, g, b] = linear(class.color).map(|channel| f32::from(channel) / 255.0);
+                [r, g, b, ROUTE_OPACITY]
+            })
+            .collect();
+        let mut segments = Vec::new();
+        self.route_owners.clear();
+        for (index, feature) in self.features.iter().enumerate() {
+            if !self.listed[index] {
+                continue;
+            }
+            let color = colors.get(usize::from(feature.class)).copied().unwrap_or([
+                1.0,
+                1.0,
+                1.0,
+                ROUTE_OPACITY,
+            ]);
+            for line in &feature.shape {
+                push_ground_line(&mut segments, line, color);
+            }
+            self.route_owners.resize(segments.len(), index as u32);
+        }
+        self.route_segments = Arc::new(segments);
+    }
+
     fn rebuild_dots(&mut self, at: JulianDate, highlight: Highlight) {
+        self.rebuild_routes();
         self.recluster();
         // Places that stay put look the same from one frame to the next unless the
         // filter, the search, the data, the highlight or the Clusters have changed.
@@ -382,8 +432,10 @@ impl FeatureLayer {
                 };
                 // Inside a Cluster a Feature has no dot of its own, unless it is the
                 // one selected, which must stay findable.
+                // A route is drawn as its line; only the selected one has a dot as well,
+                // to carry its name.
                 let in_cluster = self.clustered.get(index).copied().unwrap_or(false);
-                if in_cluster && highlight.selected != Some(index) {
+                if (in_cluster || self.spec.routes) && highlight.selected != Some(index) {
                     return Instance::HIDDEN;
                 }
                 let [r, g, b] = colors
@@ -432,6 +484,9 @@ impl Layer for FeatureLayer {
             self.clusters.clear();
             self.clustered.clear();
             self.clusters_for = None;
+            self.route_segments = Arc::default();
+            self.route_owners.clear();
+            self.routes_for = None;
         }
     }
 
@@ -597,6 +652,40 @@ impl Layer for FeatureLayer {
     fn position(&self, index: usize) -> Option<Vec3> {
         self.positions.get(index).copied()
     }
+
+    fn routes(&self) -> Option<(u64, Arc<Vec<Segment>>)> {
+        self.spec.routes.then(|| {
+            (
+                self.routes_for.unwrap_or(0),
+                Arc::clone(&self.route_segments),
+            )
+        })
+    }
+
+    fn pick_route(&self, view: &PickView, cursor: glam::Vec2, reach: f32) -> Option<usize> {
+        if !self.spec.routes {
+            return None;
+        }
+        self.route_segments
+            .iter()
+            .zip(&self.route_owners)
+            .filter_map(|(segment, owner)| {
+                let (start, end) = segment.ends();
+                // A piece with an end out of sight is passed over: the pieces are
+                // short, so its neighbours stand in for it.
+                let (start, end) = (view.project(start)?, view.project(end)?);
+                let along = end - start;
+                let t = if along.length_squared() == 0.0 {
+                    0.0
+                } else {
+                    ((cursor - start).dot(along) / along.length_squared()).clamp(0.0, 1.0)
+                };
+                let distance = cursor.distance(start + along * t);
+                (distance <= reach).then_some((distance, *owner as usize))
+            })
+            .min_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map(|(_, owner)| owner)
+    }
 }
 
 #[cfg(test)]
@@ -693,7 +782,76 @@ mod tests {
         note: "Only a test.",
         attribution: "",
         cluster: false,
+        routes: false,
     };
+
+    /// The test events again as routes: each has a line a degree long at the equator.
+    static ROUTES: Spec = Spec {
+        name: "Test routes",
+        theme: Theme::Energy,
+        listing: SPEC.listing,
+        classes: &[
+            Class::new("Big", [255, 0, 0]),
+            Class::new("Small", [255, 255, 0]),
+        ],
+        coverage: TimeCoverage::AnyMoment,
+        show: Show::Always,
+        dot_scale: |_| 1.0,
+        note: "",
+        attribution: "",
+        cluster: false,
+        routes: true,
+    };
+
+    #[test]
+    fn routes_are_drawn_as_lines_and_picked_by_them() {
+        use crate::camera::OrbitCamera;
+        use glam::Vec2;
+
+        let stub = Stub::answering(vec![Ok(EVENTS)]);
+        let mut layer = FeatureLayer::new(&ROUTES, stub as Arc<dyn Fetcher>, None);
+        assert!(layer.routes().is_some());
+        layer.set_on(true);
+        settle(&mut layer, SystemTime::now());
+        layer.rebuild_dots(start(), Highlight::default());
+
+        // Three Features, each a line of four pieces, and no dots.
+        let (generation, segments) = layer.routes().unwrap();
+        assert_eq!(segments.len(), 12);
+        assert!(shown(&layer).is_empty());
+
+        // Nothing changes until the filter does: then only the first Feature's line is left.
+        layer.rebuild_dots(start(), Highlight::default());
+        assert_eq!(layer.routes().unwrap().0, generation);
+        layer.class_on[1] = false;
+        layer.refilter();
+        layer.rebuild_dots(start(), Highlight::default());
+        let (later, segments) = layer.routes().unwrap();
+        assert_ne!(later, generation);
+        assert_eq!(segments.len(), 4);
+
+        // The selected route has a dot as well, to carry its name.
+        let highlight = Highlight {
+            selected: Some(0),
+            hovered: None,
+        };
+        layer.rebuild_dots(start(), highlight);
+        assert_eq!(shown(&layer), ["Alpha"]);
+
+        // Looking straight down on the line, a click on it finds its Feature, and a
+        // click well away from it finds nothing.
+        let mut camera = OrbitCamera::default();
+        camera.face(on_globe([0.5, 0.0]));
+        camera.set_altitude(0.05);
+        let viewport = Vec2::new(1000.0, 1000.0);
+        let view = PickView {
+            view_projection: camera.view_projection(1.0),
+            camera_position: camera.position(),
+            viewport,
+        };
+        assert_eq!(layer.pick_route(&view, viewport / 2.0, 6.0), Some(0));
+        assert_eq!(layer.pick_route(&view, Vec2::new(500.0, 300.0), 6.0), None);
+    }
 
     /// The same events as places that stay put, with the second class filtered out
     /// until asked for.
@@ -711,6 +869,7 @@ mod tests {
         note: "",
         attribution: "Test credit",
         cluster: true,
+        routes: false,
     };
 
     /// Three hundred places: a tight knot of 250 near Paris, 49 strung along the

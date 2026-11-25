@@ -162,6 +162,97 @@ pub mod military_class {
     pub const NAVAL_BASE: u8 = 2;
 }
 
+/// Power plants, as mapped in OpenStreetMap. Each one's size is its capacity in
+/// megawatts, where that is recorded.
+pub const POWER_PLANTS: Listing = extract(extract_url!("power_plants.tsv"), "power_plants.tsv");
+/// Classes of power plant, by what it runs on.
+pub mod plant_class {
+    pub const SOLAR: u8 = 0;
+    pub const WIND: u8 = 1;
+    pub const HYDRO: u8 = 2;
+    pub const GAS: u8 = 3;
+    pub const COAL: u8 = 4;
+    pub const OIL: u8 = 5;
+    pub const NUCLEAR: u8 = 6;
+    pub const BIOMASS: u8 = 7;
+    pub const GEOTHERMAL: u8 = 8;
+    pub const OTHER: u8 = 9;
+}
+
+/// Mines and quarries whose product is recorded, as mapped in OpenStreetMap.
+pub const MINES: Listing = extract(extract_url!("mines.tsv"), "mines.tsv");
+/// Classes of mine, by what is dug.
+pub mod mine_class {
+    pub const COAL: u8 = 0;
+    pub const IRON: u8 = 1;
+    pub const COPPER: u8 = 2;
+    pub const PRECIOUS: u8 = 3;
+    pub const LITHIUM: u8 = 4;
+    pub const OTHER_MINERAL: u8 = 5;
+    pub const STONE: u8 = 6;
+    pub const NOT_RECORDED: u8 = 7;
+}
+
+/// Refineries and other oil and gas sites on land, as mapped in OpenStreetMap.
+pub const OIL_AND_GAS_SITES: Listing = extract(
+    extract_url!("oil_and_gas_sites.tsv"),
+    "oil_and_gas_sites.tsv",
+);
+
+/// Named dams, as mapped in OpenStreetMap.
+pub const DAMS: Listing = extract(extract_url!("dams.tsv"), "dams.tsv");
+
+/// Oil, gas and fuel pipelines, as mapped in OpenStreetMap. Each is a route.
+pub const PIPELINES: Listing = extract(extract_url!("pipelines.tsv"), "pipelines.tsv");
+/// Classes of pipeline, by what it carries.
+pub mod pipeline_class {
+    pub const GAS: u8 = 0;
+    pub const OIL: u8 = 1;
+    pub const FUEL: u8 = 2;
+}
+
+/// How many decimal places of a degree an Extract's lines are written to.
+const EXTRACT_LINE_PRECISION: f64 = 1e4;
+
+/// Reads a line written as an encoded polyline, the compact form web maps use: each
+/// point is the step from the one before, latitude then longitude, in units of
+/// `1 / precision` degrees, packed five bits to a character. Returns longitude then
+/// latitude for each point; text that breaks off mid-point ends the line there.
+fn decode_line(text: &str, precision: f64) -> Vec<[f64; 2]> {
+    let mut points = Vec::new();
+    let mut bytes = text.bytes();
+    let (mut latitude, mut longitude) = (0_i64, 0_i64);
+    let next_step = |bytes: &mut std::str::Bytes<'_>| -> Option<i64> {
+        let (mut value, mut shift) = (0_i64, 0);
+        loop {
+            let chunk = i64::from(bytes.next()?.checked_sub(63)?);
+            value |= (chunk & 0x1F) << shift;
+            shift += 5;
+            if chunk < 0x20 {
+                break;
+            }
+            if shift > 60 {
+                return None;
+            }
+        }
+        // The lowest bit carries the sign.
+        Some(if value & 1 == 1 {
+            !(value >> 1)
+        } else {
+            value >> 1
+        })
+    };
+    while let Some(step) = next_step(&mut bytes) {
+        let Some(across) = next_step(&mut bytes) else {
+            break;
+        };
+        latitude += step;
+        longitude += across;
+        points.push([longitude as f64 / precision, latitude as f64 / precision]);
+    }
+    points
+}
+
 /// The first field of the first line of every Extract.
 const EXTRACT_MARK: &str = "#orion-extract";
 /// The version of the Extract format this build reads.
@@ -171,8 +262,9 @@ const EXTRACT_VERSION: &str = "1";
 ///
 /// The first line names the format, its version, the layer, the day it was built and
 /// how many places follow. Every other line is one place: its OpenStreetMap id,
-/// latitude, longitude, class, name, and details as `Label=value` pairs separated
-/// by `|`. Lines that cannot be read are skipped.
+/// latitude, longitude, class, name, details as `Label=value` pairs separated by
+/// `|`, then optionally a size and, for a route, its line as encoded polylines
+/// separated by spaces. Lines that cannot be read are skipped.
 pub fn parse_extract(text: &str) -> Result<Vec<Feature>, ParseError> {
     let mut lines = text.lines();
     let mut heading = lines.next().unwrap_or("").split('\t');
@@ -202,6 +294,17 @@ pub fn parse_extract(text: &str) -> Result<Vec<Feature>, ParseError> {
 
             let mut place = Feature::at(id, name, latitude, longitude);
             place.class = class;
+            place.size = fields
+                .next()
+                .and_then(|size| size.parse().ok())
+                .unwrap_or(0.0);
+            place.shape = fields
+                .next()
+                .unwrap_or("")
+                .split(' ')
+                .map(|line| decode_line(line, EXTRACT_LINE_PRECISION))
+                .filter(|line| line.len() >= 2)
+                .collect();
             for pair in details.split('|') {
                 if let Some((label, value)) = pair.split_once('=') {
                     place.attributes.push_str(label);
@@ -308,6 +411,33 @@ mod tests {
             "OpenStreetMap\tway 456\nCollected\t2026-11-25\n"
         );
         assert_ne!(places[0].key, places[1].key);
+    }
+
+    #[test]
+    fn encoded_lines_are_read_back_into_points() {
+        // The worked example from the format's own documentation, at five places.
+        let line = decode_line("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 1e5);
+        assert_eq!(line, [[-120.2, 38.5], [-120.95, 40.7], [-126.453, 43.252]]);
+        // The same three points as tools/make_extracts.py writes them, at four.
+        let line = decode_line("o}nV~sjhA_~i@vsM_zp@jnjB", EXTRACT_LINE_PRECISION);
+        assert_eq!(line, [[-120.2, 38.5], [-120.95, 40.7], [-126.453, 43.252]]);
+        assert!(decode_line("", 1e4).is_empty());
+        // Text cut off mid-point gives the points before the break.
+        assert_eq!(decode_line("o}nV~sjhA_~i@", 1e4).len(), 1);
+    }
+
+    #[test]
+    fn an_extract_can_carry_sizes_and_routes() {
+        let text = "#orion-extract\t1\tpipelines\t2026-11-25\t2\n\
+            w1\t40.70000\t-120.95000\t0\tPipeline, natural gas\tCarries=natural gas\t\to}nV~sjhA_~i@vsM_zp@jnjB\n\
+            n2\t10.00000\t20.00000\t3\tBig Plant\tRuns on=Gas\t450\t\n";
+        let places = parse_extract(text).unwrap();
+        assert_eq!(places[0].shape.len(), 1);
+        assert_eq!(places[0].shape[0].len(), 3);
+        assert_eq!(places[0].shape[0][0], [-120.2, 38.5]);
+        assert_eq!(places[0].size, 0.0);
+        assert!(places[1].shape.is_empty());
+        assert_eq!(places[1].size, 450.0);
     }
 
     #[test]

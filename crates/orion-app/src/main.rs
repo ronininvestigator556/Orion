@@ -5,6 +5,7 @@
 
 mod basemap;
 mod camera;
+mod energy_layers;
 mod feature_layer;
 mod feed;
 mod globe;
@@ -48,6 +49,8 @@ use renderer::{Renderer, Scene};
 const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
 /// How close, in logical points, the cursor must be to a dot to hover or select it.
 const PICK_REACH_POINTS: f32 = 8.0;
+/// How close, in logical points, the cursor must be to a route to click it.
+const ROUTE_REACH_POINTS: f32 = 6.0;
 /// How close, in logical points, the cursor must be to the middle of a Cluster to click it.
 const CLUSTER_REACH_POINTS: f32 = 14.0;
 /// The most Clusters whose counts are written out at once.
@@ -348,7 +351,11 @@ impl Session {
         let mut layers = Layers::new(orbit);
         let fetcher: Arc<dyn orion_data::listing::Fetcher> =
             Arc::new(orion_data::listing::Http::new());
-        for spec in places_layers::ALL.into_iter().chain(weather_layers::ALL) {
+        let specs = places_layers::ALL
+            .into_iter()
+            .chain(energy_layers::ALL)
+            .chain(weather_layers::ALL);
+        for spec in specs {
             layers.add(Box::new(feature_layer::FeatureLayer::new(
                 spec,
                 Arc::clone(&fetcher),
@@ -597,12 +604,14 @@ impl Session {
         // The dots are lent to the scene for the frame, which leaves the Layers free
         // for the sidebar to change while it is drawn.
         let dots = self.layers.take_dots();
+        let routes = self.layers.routes();
         let scene = Scene {
             view_projection: pick_view.view_projection,
             camera_position: pick_view.camera_position,
             sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
             objects: &dots,
             clusters: &self.cluster_dots,
+            routes: &routes,
             lines: &self.segments,
             sidereal_angle: self.sidereal_angle,
             base_map: self.base_map,
@@ -739,11 +748,20 @@ impl Session {
             self.select(feature);
             return;
         }
+        let scale_factor = self.renderer.scale_factor() as f32;
+        let cursor = Vec2::new(cursor.x as f32, cursor.y as f32);
+        if let Some(feature) =
+            self.layers
+                .pick_route(&view, cursor, ROUTE_REACH_POINTS * scale_factor)
+        {
+            self.select(feature);
+            return;
+        }
         // A click on a Cluster moves in on it, far enough to start breaking it up.
         let on_cluster = view.pick(
             &self.cluster_dots,
-            Vec2::new(cursor.x as f32, cursor.y as f32),
-            CLUSTER_REACH_POINTS * self.renderer.scale_factor() as f32,
+            cursor,
+            CLUSTER_REACH_POINTS * scale_factor,
         );
         match on_cluster.and_then(|index| self.cluster_dots.get(index)) {
             Some(mark) => {

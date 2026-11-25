@@ -1,6 +1,7 @@
 //! Layers: what the app shows on the globe, one kind of thing at a time.
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use glam::Vec3;
@@ -11,6 +12,7 @@ use crate::feed::Refresh;
 use crate::lines::Segment;
 use crate::objects::Instance;
 use crate::orbit_layer::OrbitLayer;
+use crate::picking::PickView;
 pub use crate::tracked::Highlight;
 
 /// One Feature: which Layer it is on, and where it comes in that Layer's own order.
@@ -48,6 +50,16 @@ pub struct ClusterMark {
     pub count: u32,
     /// Linear colour, taken from its Layer.
     pub color: [u8; 3],
+}
+
+/// Every route a Layer draws, such as its pipelines, held ready for drawing.
+#[derive(Clone, Debug)]
+pub struct Routes {
+    /// Which Layer they belong to, by its position in [`Layers`].
+    pub layer: usize,
+    /// Changes whenever the segments do, so they are sent to the GPU only then.
+    pub generation: u64,
+    pub segments: Arc<Vec<Segment>>,
 }
 
 /// Where a Layer's data came from and how fresh it is.
@@ -144,6 +156,17 @@ pub trait Layer {
     /// Where a Feature is, on the unit sphere or above it, whether or not it has a
     /// dot of its own just now.
     fn position(&self, _index: usize) -> Option<Vec3> {
+        None
+    }
+
+    /// Every route the Layer draws, as of the last `update`, with a number that
+    /// changes whenever they do. `None` for a Layer of points.
+    fn routes(&self) -> Option<(u64, Arc<Vec<Segment>>)> {
+        None
+    }
+
+    /// The Feature whose route passes within `reach` pixels of `cursor`, nearest first.
+    fn pick_route(&self, _view: &PickView, _cursor: glam::Vec2, _reach: f32) -> Option<usize> {
         None
     }
 }
@@ -252,6 +275,43 @@ impl Layers {
             })
             .filter_map(|index| self.get(index))
             .flat_map(|layer| layer.clusters())
+    }
+
+    fn on_show(&self) -> impl Iterator<Item = (usize, &dyn Layer)> {
+        (0..self.len())
+            .filter(|index| {
+                self.ranges
+                    .get(*index)
+                    .is_some_and(|range| !range.is_empty())
+            })
+            .filter_map(|index| Some((index, self.get(index)?)))
+    }
+
+    /// The routes of every Layer on show that draws any.
+    pub fn routes(&self) -> Vec<Routes> {
+        self.on_show()
+            .filter_map(|(layer, on_show)| {
+                let (generation, segments) = on_show.routes()?;
+                Some(Routes {
+                    layer,
+                    generation,
+                    segments,
+                })
+            })
+            .collect()
+    }
+
+    /// The Feature whose route passes within `reach` pixels of `cursor`.
+    pub fn pick_route(
+        &self,
+        view: &PickView,
+        cursor: glam::Vec2,
+        reach: f32,
+    ) -> Option<FeatureRef> {
+        self.on_show().find_map(|(layer, on_show)| {
+            let index = on_show.pick_route(view, cursor, reach)?;
+            Some(FeatureRef { layer, index })
+        })
     }
 
     /// Where a Feature is, whether or not it has a dot of its own just now.

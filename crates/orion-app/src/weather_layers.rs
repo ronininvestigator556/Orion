@@ -28,6 +28,7 @@ pub static EARTHQUAKES: Spec = Spec {
     note: "Magnitude 2.5 and over, from the past seven days.",
     attribution: "",
     cluster: false,
+    routes: false,
 };
 
 /// Hot spots seen from orbit in the past day.
@@ -47,6 +48,7 @@ pub static FIRE_DETECTIONS: Spec = Spec {
            It may be a wildfire, a planned burn, a gas flare or a volcano.",
     attribution: "",
     cluster: false,
+    routes: false,
 };
 
 /// Tropical storms being tracked now.
@@ -66,6 +68,7 @@ pub static STORMS: Spec = Spec {
            there is often nothing to show.",
     attribution: "",
     cluster: false,
+    routes: false,
 };
 
 /// Weather alerts in force in the United States.
@@ -86,6 +89,7 @@ pub static ALERTS: Spec = Spec {
     note: "United States only. An alert is drawn in the middle of the area it covers.",
     attribution: "",
     cluster: false,
+    routes: false,
 };
 
 /// Every Layer in this module, in the order they are listed.

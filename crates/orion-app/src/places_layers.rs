@@ -2,8 +2,7 @@
 //! Extracts carry from OpenStreetMap.
 //!
 //! As with the Weather Layers, each keeps to its own family of colours: airports
-//! white and grey, cameras blue, data centres teal, military sites olive, offshore
-//! platforms sand.
+//! white and grey, cameras blue, data centres teal, military sites olive.
 
 use orion_core::layer::{Theme, TimeCoverage};
 use orion_data::places::{self, airport_class};
@@ -39,6 +38,7 @@ pub static AIRPORTS: Spec = Spec {
     note: "Small airports, heliports and seaplane bases are in the filter.",
     attribution: "",
     cluster: true,
+    routes: false,
 };
 
 /// Cameras that read licence plates. A fixed piece of equipment at a mapped place;
@@ -59,6 +59,7 @@ pub static CAMERAS: Spec = Spec {
            some that are mapped have since been removed.",
     attribution: OPENSTREETMAP,
     cluster: true,
+    routes: false,
 };
 
 pub static DATA_CENTRES: Spec = Spec {
@@ -72,6 +73,7 @@ pub static DATA_CENTRES: Spec = Spec {
     note: VOLUNTEER_MAPPED,
     attribution: OPENSTREETMAP,
     cluster: true,
+    routes: false,
 };
 
 pub static MILITARY_SITES: Spec = Spec {
@@ -89,27 +91,8 @@ pub static MILITARY_SITES: Spec = Spec {
     note: VOLUNTEER_MAPPED,
     attribution: OPENSTREETMAP,
     cluster: true,
-};
-
-/// Oil and gas platforms at sea. Listed under Energy with the rest of that industry.
-pub static OFFSHORE_PLATFORMS: Spec = Spec {
-    name: "Offshore platforms",
-    theme: Theme::Energy,
-    listing: places::OFFSHORE_PLATFORMS,
-    classes: &[Class::new("Offshore platforms", [215, 168, 110])],
-    coverage: TimeCoverage::AnyMoment,
-    show: Show::Always,
-    dot_scale: |_| 1.3,
-    note: VOLUNTEER_MAPPED,
-    attribution: OPENSTREETMAP,
-    cluster: true,
+    routes: false,
 };
 
 /// Every Layer in this module, in the order they are listed.
-pub static ALL: [&Spec; 5] = [
-    &AIRPORTS,
-    &CAMERAS,
-    &DATA_CENTRES,
-    &MILITARY_SITES,
-    &OFFSHORE_PLATFORMS,
-];
+pub static ALL: [&Spec; 4] = [&AIRPORTS, &CAMERAS, &DATA_CENTRES, &MILITARY_SITES];

@@ -31,6 +31,11 @@ impl Segment {
             color,
         }
     }
+
+    /// Its two end points, in Earth radii in the Earth-fixed frame.
+    pub fn ends(&self) -> (Vec3, Vec3) {
+        (Vec3::from_array(self.start), Vec3::from_array(self.end))
+    }
 }
 
 /// Appends the segments joining `points` in order to `segments`.

@@ -17,8 +17,11 @@ or page where the query service's operators can reach whoever runs the job.
 
 Each Extract is a text file of tab-separated lines. The first names the format, its
 version, the layer, the day it was built and how many places follow. Every other
-line is one place: its OpenStreetMap id, latitude, longitude, class, name, and details
-as `Label=value` pairs separated by `|`.
+line is one place: its OpenStreetMap id, latitude, longitude, class, name, details
+as `Label=value` pairs separated by `|`, a size (a number whose meaning belongs to
+the layer, such as megawatts; often empty) and, for a route such as a pipeline, its
+line. A line is written the way web maps encode polylines, to four decimal places,
+which keeps a point to about four characters.
 """
 
 import datetime
@@ -96,6 +99,108 @@ def platform(tags):
     ]
 
 
+def megawatts(text):
+    """Reads a capacity such as `500 MW`, `1.2 GW` or `250 kW` as megawatts."""
+    parts = text.replace(",", ".").split()
+    if not parts:
+        return None
+    try:
+        number = float(parts[0])
+    except ValueError:
+        return None
+    unit = parts[1].lower() if len(parts) > 1 else "w"
+    scale = {"gw": 1000.0, "mw": 1.0, "kw": 0.001, "w": 0.000001}.get(unit)
+    return None if scale is None else number * scale
+
+
+# How OpenStreetMap's words for what a plant runs on map to Orion's classes.
+PLANT_FUELS = {
+    "solar": (0, "Solar"), "wind": (1, "Wind"), "hydro": (2, "Hydro"),
+    "gas": (3, "Gas"), "coal": (4, "Coal"), "oil": (5, "Oil"), "diesel": (5, "Oil"),
+    "nuclear": (6, "Nuclear"), "biomass": (7, "Biomass or waste"),
+    "biogas": (7, "Biomass or waste"), "biofuel": (7, "Biomass or waste"),
+    "waste": (7, "Biomass or waste"), "geothermal": (8, "Geothermal"),
+}
+
+
+def power_plant(tags):
+    source = first(tags, "plant:source").split(";")[0].strip().lower()
+    kind, fuel = PLANT_FUELS.get(source, (9, ""))
+    capacity = megawatts(first(tags, "plant:output:electricity"))
+    name = first(tags, "name", "name:en") or (f"{fuel} power plant" if fuel else "Power plant")
+    return kind, name, [
+        ("Runs on", fuel or first(tags, "plant:source")),
+        ("Capacity", f"{capacity:g} MW" if capacity else ""),
+        ("Operator", first(tags, "operator", "owner")),
+        ("Method", first(tags, "plant:method")),
+        ("Opened", first(tags, "start_date")),
+    ], capacity
+
+
+# What is dug, by Orion's classes. Anything else named is "another mineral".
+MINE_RESOURCES = {
+    "coal": 0, "lignite": 0, "iron_ore": 1, "iron": 1, "copper": 2, "gold": 3, "silver": 3,
+    "platinum": 3, "diamond": 3, "lithium": 4,
+    "sand": 6, "gravel": 6, "stone": 6, "limestone": 6, "clay": 6, "granite": 6, "marble": 6,
+    "basalt": 6, "sandstone": 6, "aggregate": 6, "chalk": 6, "slate": 6, "dolomite": 6,
+    "gypsum": 6, "peat": 6, "rock": 6,
+}
+
+
+def mine(tags):
+    resource = first(tags, "resource").split(";")[0].strip().lower()
+    kind = MINE_RESOURCES.get(resource, 5 if resource else 7)
+    what = resource.replace("_", " ")
+    label = "Mine shaft" if tags.get("man_made") == "mineshaft" else "Mine or quarry"
+    name = first(tags, "name", "name:en") or (f"{label}, {what}" if what else label)
+    return kind, name, [
+        ("Kind", label),
+        ("Digs", what),
+        ("Operator", first(tags, "operator", "owner")),
+        ("Opened", first(tags, "start_date")),
+    ]
+
+
+def oil_and_gas_site(tags):
+    refinery = tags.get("industrial") == "refinery"
+    label = "Refinery" if refinery else "Oil or gas site"
+    name = first(tags, "name", "name:en") or label
+    return 0 if refinery else 1, name, [
+        ("Kind", label),
+        ("Operator", first(tags, "operator", "owner")),
+        ("Handles", first(tags, "product", "substance", "content")),
+    ]
+
+
+def dam(tags):
+    return 0, first(tags, "name", "name:en") or "Dam", [
+        ("Height", first(tags, "height")),
+        ("Operator", first(tags, "operator", "owner")),
+        ("Opened", first(tags, "start_date")),
+    ]
+
+
+# What a pipeline carries, by Orion's classes.
+PIPELINE_SUBSTANCES = {
+    "gas": 0, "natural_gas": 0, "lng": 0, "cng": 0,
+    "oil": 1, "crude_oil": 1, "petroleum": 1,
+    "fuel": 2, "refined_products": 2, "ngl": 2, "hydrocarbons": 2,
+}
+
+
+def pipeline(tags):
+    substance = first(tags, "substance", "type").split(";")[0].strip().lower()
+    kind = PIPELINE_SUBSTANCES.get(substance, 2)
+    what = substance.replace("_", " ")
+    name = first(tags, "name", "name:en") or (f"Pipeline, {what}" if what else "Pipeline")
+    return kind, name, [
+        ("Carries", what),
+        ("Operator", first(tags, "operator", "owner")),
+        ("Diameter", first(tags, "diameter")),
+        ("Laid", first(tags, "location")),
+    ]
+
+
 MILITARY_KINDS = {"base": (0, "Military base"), "airfield": (1, "Military airfield"), "naval_base": (2, "Naval base")}
 
 
@@ -128,7 +233,34 @@ EXTRACTS = {
         'nwr["military"~"^(base|airfield|naval_base)$"];',
         military,
     ),
+    "power_plants": (
+        'nwr["power"="plant"];',
+        power_plant,
+    ),
+    "mines": (
+        'nwr["landuse"="quarry"]["resource"];nwr["man_made"="mineshaft"]["resource"];'
+        'nwr["industrial"="mine"];',
+        mine,
+    ),
+    "oil_and_gas_sites": (
+        'nwr["industrial"~"^(refinery|oil|gas|oil_terminal|lng_terminal)$"];',
+        oil_and_gas_site,
+    ),
+    "dams": (
+        'nwr["waterway"="dam"]["name"];',
+        dam,
+    ),
+    "pipelines": (
+        'way["man_made"="pipeline"]'
+        '["substance"~"^(gas|natural_gas|lng|cng|oil|crude_oil|petroleum|fuel|refined_products|ngl|hydrocarbons)$"];',
+        pipeline,
+    ),
 }
+
+# Extracts whose places are routes: their lines are fetched and kept.
+ROUTES = {"pipelines"}
+# How far, in degrees, a route's line may be straightened to save space: about 50 m.
+ROUTE_TOLERANCE = 0.0005
 
 
 def clean(text):
@@ -136,9 +268,55 @@ def clean(text):
     return " ".join(str(text).replace("|", "/").replace("=", ":").split())[:200]
 
 
-def query(selection):
-    """Asks the query service for every place a selection matches, with a point for each."""
-    text = f"[out:json][timeout:{QUERY_SECONDS}];({selection});out center tags qt;"
+def simplify(points, tolerance):
+    """Drops the points a line can do without, never straying more than `tolerance`."""
+    if len(points) <= 2:
+        return points
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    spans = [(0, len(points) - 1)]
+    while spans:
+        start, end = spans.pop()
+        (ax, ay), (bx, by) = points[start], points[end]
+        dx, dy = bx - ax, by - ay
+        length_squared = dx * dx + dy * dy
+        farthest, at = 0.0, start
+        for index in range(start + 1, end):
+            px, py = points[index]
+            t = 0.0 if length_squared == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_squared))
+            distance = ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+            if distance > farthest:
+                farthest, at = distance, index
+        if farthest > tolerance:
+            keep[at] = True
+            spans.append((start, at))
+            spans.append((at, end))
+    return [point for point, kept in zip(points, keep) if kept]
+
+
+def encode_line(points):
+    """Writes (latitude, longitude) points as an encoded polyline to four decimal places."""
+    text = []
+    previous = (0, 0)
+    for latitude, longitude in points:
+        current = (round(latitude * 10_000), round(longitude * 10_000))
+        for now, before in zip(current, previous):
+            value = (now - before) << 1
+            if value < 0:
+                value = ~value
+            while value >= 0x20:
+                text.append(chr((0x20 | (value & 0x1F)) + 63))
+                value >>= 5
+            text.append(chr(value + 63))
+        previous = current
+    return "".join(text)
+
+
+def query(selection, with_lines=False):
+    """Asks the query service for every place a selection matches, with a point for
+    each, or its whole line when `with_lines` is set."""
+    shape = "geom" if with_lines else "center"
+    text = f"[out:json][timeout:{QUERY_SECONDS}];({selection});out {shape} tags qt;"
     contact = os.environ.get("ORION_EXTRACTS_CONTACT", "").strip()
     agent = "orion-extracts/1" + (f" ({contact})" if contact else "")
     request = urllib.request.Request(
@@ -166,15 +344,26 @@ def query(selection):
 def build(layer, folder):
     selection, describe = EXTRACTS[layer]
     lines = {}
-    for element in query(selection):
+    for element in query(selection, with_lines=layer in ROUTES):
+        line = ""
         point = element.get("center", element)
+        if layer in ROUTES:
+            route = [(node["lat"], node["lon"]) for node in element.get("geometry", []) if node]
+            route = simplify(route, ROUTE_TOLERANCE)
+            if len(route) < 2:
+                continue
+            line = encode_line(route)
+            middle = route[len(route) // 2]
+            point = {"lat": middle[0], "lon": middle[1]}
         if "lat" not in point or "lon" not in point:
             continue
         identity = f"{element['type'][0]}{element['id']}"
-        kind, name, details = describe(element.get("tags", {}))
+        kind, name, details, *size = describe(element.get("tags", {}))
         pairs = "|".join(f"{label}={clean(value)}" for label, value in details if value)
+        size = f"{size[0]:g}" if size and size[0] else ""
         lines[identity] = (
-            f"{identity}\t{point['lat']:.5f}\t{point['lon']:.5f}\t{kind}\t{clean(name)}\t{pairs}\n"
+            f"{identity}\t{point['lat']:.5f}\t{point['lon']:.5f}\t{kind}\t{clean(name)}\t{pairs}"
+            f"\t{size}\t{line}\n"
         )
     if not lines:
         raise RuntimeError(f"the query for {layer} found nothing, which cannot be right")

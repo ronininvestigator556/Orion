@@ -15,6 +15,7 @@ use winit::window::Window;
 
 use crate::basemap::{BaseMap, BaseMapChoices, BaseMapView};
 use crate::globe::Globe;
+use crate::layer::Routes;
 use crate::lines::{Lines, Segment};
 use crate::objects::{Instance, Objects, View};
 use crate::reference::ReferenceLines;
@@ -27,6 +28,9 @@ const SPACE: wgpu::Color = wgpu::Color {
     b: 0.012,
     a: 1.0,
 };
+
+/// Width of a route, such as a pipeline, in logical points.
+const ROUTE_WIDTH_POINTS: f32 = 1.6;
 
 /// Facts about the graphics adapter in use, for the diagnostics panel.
 pub struct GpuInfo {
@@ -45,6 +49,8 @@ pub struct Scene<'a> {
     pub objects: &'a [Instance],
     /// One mark per Cluster on show.
     pub clusters: &'a [Instance],
+    /// The routes of each Layer that draws them.
+    pub routes: &'a [Routes],
     /// Orbit Paths and Ground Tracks.
     pub lines: &'a [Segment],
     /// How far, in radians, the Earth-fixed frame is turned east of the stars.
@@ -91,6 +97,11 @@ pub struct Renderer {
     reference: ReferenceLines,
     stars: Stars,
     lines: Lines,
+    /// The routes of each Layer that has drawn any, with the Layer's position and
+    /// the generation of routes held on the GPU. Kept until the app closes.
+    routes: Vec<(usize, u64, Lines)>,
+    /// Which of those to draw this frame.
+    routes_on_show: Vec<usize>,
     clusters: Objects,
     objects: Objects,
 
@@ -265,6 +276,8 @@ impl Renderer {
             reference,
             stars,
             lines,
+            routes: Vec::new(),
+            routes_on_show: Vec::new(),
             clusters,
             objects,
             egui_ctx,
@@ -381,6 +394,30 @@ impl Renderer {
         );
         self.lines
             .update(&self.device, &self.queue, &view, scene.lines);
+        self.routes_on_show.clear();
+        for routes in scene.routes {
+            let slot = match self
+                .routes
+                .iter()
+                .position(|(layer, ..)| *layer == routes.layer)
+            {
+                Some(slot) => slot,
+                None => {
+                    let lines =
+                        Lines::with_width(&self.device, self.scene_format, ROUTE_WIDTH_POINTS);
+                    // A generation no Layer starts at, so the first routes are always sent.
+                    self.routes.push((routes.layer, u64::MAX, lines));
+                    self.routes.len() - 1
+                }
+            };
+            let (_, generation, lines) = &mut self.routes[slot];
+            if *generation != routes.generation {
+                *generation = routes.generation;
+                lines.set_segments(&self.device, &self.queue, &routes.segments);
+            }
+            lines.set_view(&self.queue, &view);
+            self.routes_on_show.push(slot);
+        }
         self.clusters
             .update(&self.device, &self.queue, &view, scene.clusters);
         self.objects
@@ -454,6 +491,9 @@ impl Renderer {
             self.base_map.draw(&mut pass);
             // Borders and roads lie on the ground, under everything that flies.
             self.reference.draw(&mut pass);
+            for slot in &self.routes_on_show {
+                self.routes[*slot].2.draw(&mut pass);
+            }
             // Lines go under the dots so a dot on a line stays readable.
             self.lines.draw(&mut pass);
             // Clusters lie on the ground, so everything else is drawn over them.
