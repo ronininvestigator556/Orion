@@ -15,6 +15,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use glam::{DVec3, Vec2};
+use orion_core::clock::SimulationClock;
 use orion_core::sun::{subsolar_point, sun_direction};
 use orion_core::time::JulianDate;
 use orion_data::{Cache, CelesTrak};
@@ -114,6 +115,8 @@ struct Running {
     camera: OrbitCamera,
     tracked: Tracked,
     feed: Feed,
+    clock: SimulationClock,
+    clock_panel: ui::ClockPanel,
     selected: Option<Selection>,
     /// Index of the Tracked Object under the cursor.
     hovered: Option<usize>,
@@ -168,6 +171,8 @@ impl Running {
             camera: OrbitCamera::default(),
             tracked,
             feed,
+            clock: SimulationClock::new(julian_date_now()),
+            clock_panel: ui::ClockPanel::default(),
             selected,
             hovered: None,
             show_ground_track: options.ground_track,
@@ -187,8 +192,9 @@ impl Running {
         // Exponential smoothing so the readout is legible.
         self.frame_ms += (elapsed_ms - self.frame_ms) * 0.05;
 
-        // Until the Simulation Clock exists, the scene always shows the present moment.
-        let now = julian_date_now();
+        // Everything in the scene is shown for the Simulation Clock's moment, `now`.
+        let real_now = julian_date_now();
+        let now = self.clock.advance(real_now, elapsed_ms as f64 / 1000.0);
         if let Some(objects) = self.feed.poll() {
             self.tracked.replace(objects);
             // Indexes belong to the old set; find the selected object again by number.
@@ -267,15 +273,28 @@ impl Running {
         let mut refresh_requested = false;
         let mut show_ground_track = self.show_ground_track;
         let mut selection_actions = ui::SelectionActions::default();
+        let mut clock_action = None;
+        let clock = self.clock;
+        let clock_panel = &mut self.clock_panel;
         self.renderer.render(&self.window, &scene, |ctx, gpu| {
             ui::draw_labels(ctx, &labels);
             ui::draw(ctx, gpu, &diagnostics);
             refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
+            clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
             if let Some(details) = &details {
                 selection_actions = ui::draw_selected(ctx, details, &mut show_ground_track);
             }
         });
         self.show_ground_track = show_ground_track;
+        match clock_action {
+            Some(ui::ClockAction::SetPaused(paused)) => self.clock.set_paused(paused),
+            Some(ui::ClockAction::Faster) => self.clock.faster(),
+            Some(ui::ClockAction::Slower) => self.clock.slower(),
+            Some(ui::ClockAction::JumpBy(days)) => self.clock.jump_by(days, real_now),
+            Some(ui::ClockAction::JumpTo(moment)) => self.clock.jump_to(moment, real_now),
+            Some(ui::ClockAction::ReturnToLive) => self.clock.return_to_live(real_now),
+            None => {}
+        }
         if selection_actions.clear {
             self.selected = None;
         }

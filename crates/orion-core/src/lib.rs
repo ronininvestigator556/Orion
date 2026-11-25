@@ -13,6 +13,7 @@
 //! - **Inertial**: fixed against the stars. +X points towards the March equinox.
 
 pub mod catalogue;
+pub mod clock;
 pub mod frames;
 pub mod sun;
 pub mod time;

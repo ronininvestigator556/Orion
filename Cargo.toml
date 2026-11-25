@@ -14,6 +14,8 @@ orion-data = { path = "crates/orion-data" }
 
 anyhow = "1"
 bytemuck = { version = "1.25", features = ["derive"] }
+# Only used to show times in the local time zone.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 csv = "1.4"
 directories = "6"
 # egui bundles no fonts by default, so text is invisible without this feature.

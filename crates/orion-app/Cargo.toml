@@ -16,6 +16,7 @@ orion-data.workspace = true
 
 anyhow.workspace = true
 bytemuck.workspace = true
+chrono.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true

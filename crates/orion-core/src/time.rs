@@ -42,6 +42,40 @@ impl JulianDate {
         Self(day_number as f64 + day_fraction)
     }
 
+    /// Reads a UTC date and time written as `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`.
+    /// A `T` may stand in for the space. Returns `None` for anything else, including
+    /// dates that do not exist.
+    pub fn parse_utc(text: &str) -> Option<Self> {
+        let (date, time) = text.trim().split_once([' ', 'T'])?;
+
+        let mut date = date.split('-');
+        let year: i32 = date.next()?.parse().ok()?;
+        let month: u32 = date.next()?.parse().ok()?;
+        let day: u32 = date.next()?.parse().ok()?;
+
+        let mut time = time.trim().split(':');
+        let hour: u32 = time.next()?.parse().ok()?;
+        let minute: u32 = time.next()?.parse().ok()?;
+        let second: u32 = match time.next() {
+            Some(second) => second.parse().ok()?,
+            None => 0,
+        };
+        if date.next().is_some() || time.next().is_some() {
+            return None;
+        }
+
+        let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_month = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap_year => 29,
+            2 => 28,
+            _ => return None,
+        };
+        let valid = (1..=days_in_month).contains(&day) && hour < 24 && minute < 60 && second < 60;
+        valid.then(|| Self::from_utc(year, month, day, hour, minute, second as f64))
+    }
+
     /// The Gregorian calendar date and time of day of this moment, in UTC.
     pub fn to_utc(self) -> CalendarTime {
         // Shift by half a day so whole numbers fall at midnight, then split.
@@ -127,6 +161,39 @@ mod tests {
                 (year, month, day, hour, minute)
             );
             assert!((calendar.second - 30.0).abs() < 1e-3, "{calendar:?}");
+        }
+    }
+
+    #[test]
+    fn written_times_are_read_as_utc() {
+        let expected = JulianDate::from_utc(2026, 11, 25, 18, 30, 0.0);
+        assert_eq!(JulianDate::parse_utc("2026-11-25 18:30"), Some(expected));
+        assert_eq!(
+            JulianDate::parse_utc(" 2026-11-25T18:30:00 "),
+            Some(expected)
+        );
+        assert_eq!(
+            JulianDate::parse_utc("2024-02-29 00:00:59"),
+            Some(JulianDate::from_utc(2024, 2, 29, 0, 0, 59.0))
+        );
+    }
+
+    #[test]
+    fn nonsense_times_are_not_read() {
+        for text in [
+            "",
+            "tomorrow",
+            "2026-11-25",
+            "2026-11-25 18",
+            "2026-13-01 00:00",
+            "2026-02-29 00:00",
+            "2026-11-31 00:00",
+            "2026-11-25 24:00",
+            "2026-11-25 18:60",
+            "2026-11-25 18:30:00:00",
+            "2026-11-25-01 18:30",
+        ] {
+            assert_eq!(JulianDate::parse_utc(text), None, "{text:?}");
         }
     }
 

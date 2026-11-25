@@ -5,6 +5,8 @@ use orion_core::sun::SurfacePoint;
 use std::time::Duration;
 
 use orion_core::catalogue::ObjectKind;
+use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
+use orion_core::time::JulianDate;
 
 use crate::feed::{Origin, Refresh, Status};
 use crate::renderer::GpuInfo;
@@ -53,6 +55,182 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
                 tracked.propagation_ms
             ));
         });
+}
+
+/// What the Simulation Clock panel remembers between frames.
+#[derive(Clone, Debug, Default)]
+pub struct ClockPanel {
+    /// What has been typed into the "jump to" box.
+    jump_text: String,
+    /// True if the last thing entered there could not be read as a time.
+    jump_rejected: bool,
+    show_local_time: bool,
+}
+
+/// What the user asked the Simulation Clock to do this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClockAction {
+    SetPaused(bool),
+    Faster,
+    Slower,
+    /// Move by this many days, positive for later.
+    JumpBy(f64),
+    JumpTo(JulianDate),
+    ReturnToLive,
+}
+
+/// Draws the Simulation Clock panel.
+pub fn draw_clock(
+    ctx: &egui::Context,
+    clock: &SimulationClock,
+    real_now: JulianDate,
+    panel: &mut ClockPanel,
+) -> Option<ClockAction> {
+    let mut action = None;
+    egui::Window::new("Simulation Clock")
+        .default_pos([12.0, 340.0])
+        .resizable(false)
+        .show(ctx, |ui| {
+            let moment = clock.moment();
+            ui.heading(if panel.show_local_time {
+                format_local(moment)
+            } else {
+                format_utc(moment)
+            });
+            ui.label(clock_status(clock, real_now));
+
+            // Scrub anywhere within the allowed window around real time.
+            let mut offset_days = clock.offset_days(real_now);
+            let slider = egui::Slider::new(&mut offset_days, -MAX_OFFSET_DAYS..=MAX_OFFSET_DAYS)
+                .fixed_decimals(2)
+                .suffix(" days");
+            if ui.add(slider).changed() {
+                action = Some(ClockAction::JumpTo(JulianDate(real_now.0 + offset_days)));
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("-1 day").clicked() {
+                    action = Some(ClockAction::JumpBy(-1.0));
+                }
+                if ui.button("-1 hour").clicked() {
+                    action = Some(ClockAction::JumpBy(-1.0 / 24.0));
+                }
+                let pause_label = if clock.is_paused() { "Play" } else { "Pause" };
+                if ui.button(pause_label).clicked() {
+                    action = Some(ClockAction::SetPaused(!clock.is_paused()));
+                }
+                if ui.button("+1 hour").clicked() {
+                    action = Some(ClockAction::JumpBy(1.0 / 24.0));
+                }
+                if ui.button("+1 day").clicked() {
+                    action = Some(ClockAction::JumpBy(1.0));
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Slower").clicked() {
+                    action = Some(ClockAction::Slower);
+                }
+                if ui.button("Faster").clicked() {
+                    action = Some(ClockAction::Faster);
+                }
+                if ui
+                    .add_enabled(!clock.is_live(), egui::Button::new("Back to now"))
+                    .clicked()
+                {
+                    action = Some(ClockAction::ReturnToLive);
+                }
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Jump to (UTC)");
+                let field = egui::TextEdit::singleline(&mut panel.jump_text)
+                    .hint_text("YYYY-MM-DD HH:MM")
+                    .desired_width(130.0);
+                let entered = ui.add(field).lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if ui.button("Go").clicked() || entered {
+                    match JulianDate::parse_utc(&panel.jump_text) {
+                        Some(moment) => {
+                            panel.jump_rejected = false;
+                            action = Some(ClockAction::JumpTo(moment));
+                        }
+                        None => panel.jump_rejected = true,
+                    }
+                }
+            });
+            if panel.jump_rejected {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 190, 90),
+                    "Write the time as YYYY-MM-DD HH:MM, in UTC.",
+                );
+            }
+            ui.label(format!(
+                "The clock stays within {MAX_OFFSET_DAYS:.0} days of now."
+            ));
+            ui.checkbox(&mut panel.show_local_time, "Show local time");
+        });
+    action
+}
+
+/// Describes what the Simulation Clock is doing, such as `Running at 60×, 2.0 hours ahead of now`.
+fn clock_status(clock: &SimulationClock, real_now: JulianDate) -> String {
+    if clock.is_live() {
+        return "Live".to_owned();
+    }
+    let rate = clock.rate();
+    let motion = if clock.is_paused() {
+        "Paused".to_owned()
+    } else if rate == 1.0 {
+        "Running at normal speed".to_owned()
+    } else if rate == -1.0 {
+        "Running backwards at normal speed".to_owned()
+    } else if rate < 0.0 {
+        format!("Running backwards at {:.0}×", -rate)
+    } else {
+        format!("Running at {rate:.0}×")
+    };
+
+    let offset_seconds = clock.offset_days(real_now) * 86_400.0;
+    let offset = if offset_seconds.abs() < 30.0 {
+        "at the present".to_owned()
+    } else {
+        format!(
+            "{} {} now",
+            format_duration(Duration::from_secs_f64(offset_seconds.abs())),
+            if offset_seconds > 0.0 {
+                "ahead of"
+            } else {
+                "behind"
+            }
+        )
+    };
+    format!("{motion}, {offset}")
+}
+
+fn format_utc(moment: JulianDate) -> String {
+    let time = moment.to_utc();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        time.year,
+        time.month,
+        time.day,
+        time.hour,
+        time.minute,
+        time.second.floor()
+    )
+}
+
+/// Formats a moment in the computer's time zone, with its offset from UTC.
+fn format_local(moment: JulianDate) -> String {
+    let unix_seconds = (moment.0 - JulianDate::UNIX_EPOCH.0) * 86_400.0;
+    match chrono::DateTime::from_timestamp(unix_seconds.floor() as i64, 0) {
+        Some(utc) => utc
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S %:z")
+            .to_string(),
+        None => format_utc(moment),
+    }
 }
 
 /// What the user asked for in the information panel this frame.
@@ -263,6 +441,49 @@ fn format_longitude(degrees: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_status_says_what_the_clock_is_doing() {
+        let real_now = JulianDate::from_utc(2026, 11, 25, 6, 0, 0.0);
+        let mut clock = SimulationClock::new(real_now);
+        assert_eq!(clock_status(&clock, real_now), "Live");
+
+        clock.set_paused(true);
+        assert_eq!(clock_status(&clock, real_now), "Paused, at the present");
+
+        clock.set_paused(false);
+        clock.jump_by(2.0 / 24.0, real_now);
+        assert_eq!(
+            clock_status(&clock, real_now),
+            "Running at normal speed, 2.0 hours ahead of now"
+        );
+
+        clock.faster();
+        clock.faster();
+        clock.jump_by(-3.0, real_now);
+        assert_eq!(
+            clock_status(&clock, real_now),
+            "Running at 60×, 2.9 days behind now"
+        );
+
+        for _ in 0..4 {
+            clock.slower();
+        }
+        assert_eq!(
+            clock_status(&clock, real_now),
+            "Running backwards at 10×, 2.9 days behind now"
+        );
+    }
+
+    #[test]
+    fn moments_are_shown_in_utc_to_the_second() {
+        let moment = JulianDate::from_utc(2026, 11, 25, 6, 21, 7.6);
+        assert_eq!(format_utc(moment), "2026-11-25 06:21:07 UTC");
+        // The local form shows the same instant with an offset, whatever the zone.
+        let local = format_local(moment);
+        assert!(local.starts_with("2026-11-2"), "{local}");
+        assert_eq!(local.len(), "2026-11-25 06:21:07 +00:00".len(), "{local}");
+    }
 
     #[test]
     fn durations_use_the_nearest_sensible_unit() {
