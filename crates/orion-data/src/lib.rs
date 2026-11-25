@@ -6,6 +6,7 @@
 
 mod cache;
 pub mod listing;
+pub mod places;
 mod source;
 #[cfg(test)]
 mod test_support;

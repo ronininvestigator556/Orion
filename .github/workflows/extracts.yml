@@ -1,0 +1,40 @@
+name: Extracts
+
+# Builds the Extracts, the small files of places taken from OpenStreetMap that every
+# copy of Orion downloads, and publishes them as the files of one release (ADR 0004).
+
+on:
+  schedule:
+    # Early on Monday, at a minute nobody else picks.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# Two runs at once would only upload over each other.
+concurrency:
+  group: extracts
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the Extracts
+        env:
+          # Tells the operators of OpenStreetMap's query service who is asking.
+          ORION_EXTRACTS_CONTACT: ${{ github.server_url }}/${{ github.repository }}
+        run: python3 tools/make_extracts.py extracts
+      - name: Publish them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view extracts >/dev/null 2>&1; then
+            gh release create extracts --latest=false --title "Extracts" \
+              --notes "Files of places that Orion downloads, rebuilt every week from OpenStreetMap. © OpenStreetMap contributors, under the Open Database Licence. This is not a version of the app: for that, see the other releases."
+          fi
+          gh release upload extracts extracts/*.tsv --clobber

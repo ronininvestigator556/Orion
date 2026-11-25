@@ -104,6 +104,12 @@ pub trait Layer {
     fn is_loading(&self) -> bool {
         false
     }
+
+    /// Credit that must stay on screen while the Layer is on, where its Source asks
+    /// for that.
+    fn attribution(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Every Layer the app has, and their dots gathered into one list for drawing and picking.

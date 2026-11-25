@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers under their Themes, each with a switch, and a search box across the ones that are on. Under Weather there are earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts; each is fetched only once it is switched on, and its dots can be clicked for details. The satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers under their Themes, each with a switch, and a search box across the ones that are on. Under Places there are airports, licence plate cameras, data centres and military sites, and under Energy offshore platforms. Under Weather there are earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts; each is fetched only once it is switched on, and its dots can be clicked for details. The satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Download
 
@@ -52,6 +52,18 @@ To draw a picture to a file without opening a window, add `--snapshot` and, to g
 cargo run -- --at 48.85,2.35,200 --snapshot paris.png --wait 15
 ```
 
+## Extracts
+
+Places taken from OpenStreetMap reach the app as Extracts: one small file per Layer, attached to the release named `extracts`. OpenStreetMap's query service must not be used as an app's backend, so the app never asks it anything. The Extracts workflow does, a handful of times each Monday, by running `tools/make_extracts.py`, and replaces the files on that release. It can also be started by hand from the Actions page, which is how the files come to exist the first time. Until then those Layers report that their Source cannot be reached.
+
+To build the Extracts on your own computer, for instance to try a new one:
+
+```bash
+python3 tools/make_extracts.py extracts
+```
+
+Copying a file from there into the `layers` folder inside Orion's cache folder makes the app use it for a week without fetching.
+
 ## Releasing
 
 1. Set `version` under `[workspace.package]` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and commit.
@@ -68,8 +80,8 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`. The borders, roads and place names in its `assets` folder are built from Natural Earth by `cargo run --release --package orion-core --example make_reference`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
 - `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
-- `tools/`: scripts that prepare bundled data. `make_nws_zones.py` builds the table of U.S. forecast zones that weather alerts are placed by.
-- `.github/workflows/`: checks run on every push, and the release build.
+- `tools/`: scripts that prepare data. `make_extracts.py` builds the Extracts from OpenStreetMap, and `make_nws_zones.py` the bundled table of U.S. forecast zones that weather alerts are placed by.
+- `.github/workflows/`: checks run on every push, the release build, and the weekly Extracts.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.
 
@@ -78,6 +90,8 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - Earth imagery: NASA Blue Marble Next Generation and NASA Black Marble 2016, courtesy of NASA Earth Observatory. Both are in the public domain.
 - Streamed imagery: Blue Marble and the Landsat WELD composite, provided by NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth Science Data and Information System (ESDIS).
 - Borders, roads and place names: made with [Natural Earth](https://www.naturalearthdata.com), free vector map data in the public domain.
+- Airports: [OurAirports](https://ourairports.com), released into the public domain.
+- Licence plate cameras, data centres, military sites and offshore platforms: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, under the Open Database Licence. That licence, not the code's, covers the Extracts.
 - Earthquakes: the U.S. Geological Survey's Earthquake Hazards Program.
 - Fire detections: NASA's Fire Information for Resource Management System (FIRMS), part of NASA's Earth Science Data and Information System (ESDIS).
 - Tropical storms: the U.S. National Hurricane Center. Weather alerts and forecast zones: the U.S. National Weather Service. Both are part of NOAA, and their data is in the public domain.

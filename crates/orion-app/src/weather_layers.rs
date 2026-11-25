@@ -17,24 +17,16 @@ pub static EARTHQUAKES: Spec = Spec {
     theme: Theme::Weather,
     listing: weather::EARTHQUAKES,
     classes: &[
-        Class {
-            label: "Magnitude under 4.5",
-            color: [242, 201, 76],
-        },
-        Class {
-            label: "Magnitude 4.5 to 6",
-            color: [242, 140, 40],
-        },
-        Class {
-            label: "Magnitude 6 and over",
-            color: [235, 60, 60],
-        },
+        Class::new("Magnitude under 4.5", [242, 201, 76]),
+        Class::new("Magnitude 4.5 to 6", [242, 140, 40]),
+        Class::new("Magnitude 6 and over", [235, 60, 60]),
     ],
     coverage: TimeCoverage::PresentAndPast { days: 7.0 },
     show: Show::Recent { days: 7.0 },
     // Magnitude 2.5 is the usual dot; each whole magnitude above adds most of another.
     dot_scale: |quake| 1.0 + (quake.size - 2.5).max(0.0) * 0.9,
     note: "Magnitude 2.5 and over, from the past seven days.",
+    attribution: "",
 };
 
 /// Hot spots seen from orbit in the past day.
@@ -43,24 +35,16 @@ pub static FIRE_DETECTIONS: Spec = Spec {
     theme: Theme::Weather,
     listing: weather::FIRE_DETECTIONS,
     classes: &[
-        Class {
-            label: "High confidence",
-            color: [255, 70, 20],
-        },
-        Class {
-            label: "Nominal confidence",
-            color: [255, 138, 61],
-        },
-        Class {
-            label: "Low confidence",
-            color: [170, 110, 80],
-        },
+        Class::new("High confidence", [255, 70, 20]),
+        Class::new("Nominal confidence", [255, 138, 61]),
+        Class::new("Low confidence", [170, 110, 80]),
     ],
     coverage: TimeCoverage::PresentAndPast { days: 1.0 },
     show: Show::Recent { days: 1.0 },
     dot_scale: |detection| if detection.size >= 100.0 { 1.6 } else { 1.0 },
     note: "Each is a hot spot about a kilometre across seen by a satellite in the past day. \
            It may be a wildfire, a planned burn, a gas flare or a volcano.",
+    attribution: "",
 };
 
 /// Tropical storms being tracked now.
@@ -69,24 +53,16 @@ pub static STORMS: Spec = Spec {
     theme: Theme::Weather,
     listing: weather::STORMS,
     classes: &[
-        Class {
-            label: "Hurricanes",
-            color: [255, 255, 255],
-        },
-        Class {
-            label: "Tropical storms",
-            color: [128, 255, 234],
-        },
-        Class {
-            label: "Depressions and others",
-            color: [176, 190, 197],
-        },
+        Class::new("Hurricanes", [255, 255, 255]),
+        Class::new("Tropical storms", [128, 255, 234]),
+        Class::new("Depressions and others", [176, 190, 197]),
     ],
     coverage: TimeCoverage::PresentOnly,
     show: Show::InForce,
     dot_scale: |storm| 3.0 + (storm.size / 40.0).min(3.0),
     note: "Atlantic and eastern and central Pacific only. Outside the hurricane season \
            there is often nothing to show.",
+    attribution: "",
 };
 
 /// Weather alerts in force in the United States.
@@ -95,31 +71,17 @@ pub static ALERTS: Spec = Spec {
     theme: Theme::Weather,
     listing: weather::ALERTS,
     classes: &[
-        Class {
-            label: "Extreme",
-            color: [255, 20, 147],
-        },
-        Class {
-            label: "Severe",
-            color: [224, 64, 251],
-        },
-        Class {
-            label: "Moderate",
-            color: [179, 136, 255],
-        },
-        Class {
-            label: "Minor",
-            color: [209, 196, 233],
-        },
-        Class {
-            label: "Severity not given",
-            color: [150, 150, 160],
-        },
+        Class::new("Extreme", [255, 20, 147]),
+        Class::new("Severe", [224, 64, 251]),
+        Class::new("Moderate", [179, 136, 255]),
+        Class::new("Minor", [209, 196, 233]),
+        Class::new("Severity not given", [150, 150, 160]),
     ],
     coverage: TimeCoverage::PresentOnly,
     show: Show::InForce,
     dot_scale: |alert| 1.4 + alert.size * 0.3,
     note: "United States only. An alert is drawn in the middle of the area it covers.",
+    attribution: "",
 };
 
 /// Every Layer in this module, in the order they are listed.

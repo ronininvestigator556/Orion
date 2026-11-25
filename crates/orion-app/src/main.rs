@@ -13,6 +13,7 @@ mod lines;
 mod objects;
 mod orbit_layer;
 mod picking;
+mod places_layers;
 mod reference;
 mod renderer;
 mod sidebar;
@@ -339,7 +340,7 @@ impl Session {
         let mut layers = Layers::new(orbit);
         let fetcher: Arc<dyn orion_data::listing::Fetcher> =
             Arc::new(orion_data::listing::Http::new());
-        for spec in weather_layers::ALL {
+        for spec in places_layers::ALL.into_iter().chain(weather_layers::ALL) {
             layers.add(Box::new(feature_layer::FeatureLayer::new(
                 spec,
                 Arc::clone(&fetcher),
@@ -506,6 +507,25 @@ impl Session {
             Vec::new()
         };
 
+        // Credit that a Source asks to stay on screen while its data is.
+        let mut credits: Vec<&str> = Vec::new();
+        if self.base_map.imagery {
+            credits.push("Imagery: NASA");
+        }
+        for index in 0..self.layers.len() {
+            let credit = self
+                .layers
+                .get(index)
+                .filter(|layer| layer.is_on())
+                .and_then(|layer| layer.attribution());
+            if let Some(credit) = credit
+                && !credits.contains(&credit)
+            {
+                credits.push(credit);
+            }
+        }
+        let credits = credits.join("  ·  ");
+
         let diagnostics = ui::Diagnostics {
             frame_ms: self.frame_ms,
             subsolar: subsolar_point(now),
@@ -549,6 +569,7 @@ impl Session {
             // Place names first, so a Feature's name is drawn over them.
             ui::draw_place_names(&ctx, &place_labels);
             ui::draw_labels(&ctx, &labels);
+            ui::draw_credits(&ctx, &credits);
             ui::draw_view(&ctx, &mut view_choices, can_follow);
             ui::draw_about(&ctx);
             ui::draw(&ctx, gpu, &diagnostics);

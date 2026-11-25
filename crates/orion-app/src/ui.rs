@@ -79,6 +79,7 @@ pub fn draw_about(ctx: &egui::Context) {
             ui.label("Orbital data and catalogue: CelesTrak, from the catalogue published by the U.S. Space Force at Space-Track.org.");
             ui.label("Earth imagery: NASA Blue Marble and Black Marble, and a Landsat composite, streamed from NASA's Global Imagery Browse Services.");
             ui.label("Borders, roads and place names: Natural Earth, in the public domain.");
+            ui.label("Airports: OurAirports. Licence plate cameras, data centres, military sites and offshore platforms: © OpenStreetMap contributors, under the Open Database Licence.");
             ui.label("Earthquakes: U.S. Geological Survey. Fire detections: NASA FIRMS. Tropical storms and weather alerts: NOAA's National Hurricane Center and National Weather Service.");
             ui.label("Stars: the Yale Bright Star Catalogue, 5th revised edition.");
 
@@ -427,6 +428,35 @@ pub fn draw_place_names(ctx: &egui::Context, labels: &[PlaceLabel<'_>]) {
         );
         painter.text(anchor, align, label.name, font, ink);
     }
+}
+
+/// Draws the credits that must stay on screen, small, along the bottom of the scene.
+pub fn draw_credits(ctx: &egui::Context, credits: &str) {
+    if credits.is_empty() {
+        return;
+    }
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let scene = ctx.content_rect();
+    // Centred on the part of the window the sidebar leaves to the globe.
+    let anchor = egui::pos2(
+        (scene.left() + crate::sidebar::WIDTH + scene.right()) / 2.0,
+        scene.bottom() - 4.0,
+    );
+    let font = egui::FontId::proportional(11.0);
+    painter.text(
+        anchor + egui::vec2(1.0, 1.0),
+        egui::Align2::CENTER_BOTTOM,
+        credits,
+        font.clone(),
+        egui::Color32::from_black_alpha(220),
+    );
+    painter.text(
+        anchor,
+        egui::Align2::CENTER_BOTTOM,
+        credits,
+        font,
+        egui::Color32::from_gray(200),
+    );
 }
 
 /// Draws a name next to each given point on screen, in logical points.

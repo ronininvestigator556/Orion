@@ -37,6 +37,29 @@ pub struct Class {
     pub label: &'static str,
     /// Colour as written for the screen (sRGB), red, green and blue.
     pub color: [u8; 3],
+    /// Whether the filter lets the class through before the user has touched it.
+    pub on: bool,
+}
+
+impl Class {
+    /// A class that is shown until the user filters it out.
+    pub const fn new(label: &'static str, color: [u8; 3]) -> Self {
+        Self {
+            label,
+            color,
+            on: true,
+        }
+    }
+
+    /// A class that is hidden until the user asks for it, for kinds so numerous
+    /// that they would bury the rest.
+    pub const fn hidden(label: &'static str, color: [u8; 3]) -> Self {
+        Self {
+            label,
+            color,
+            on: false,
+        }
+    }
 }
 
 /// Which of a Layer's Features are on show at a given moment.
@@ -46,6 +69,8 @@ pub enum Show {
     Recent { days: f64 },
     /// Those still in force at the moment.
     InForce,
+    /// All of them, whatever the moment: places that stay where they are.
+    Always,
 }
 
 /// Everything that makes one such Layer different from another.
@@ -60,6 +85,9 @@ pub struct Spec {
     pub dot_scale: fn(&Feature) -> f32,
     /// What a reader should know about the Layer as a whole.
     pub note: &'static str,
+    /// Credit that must stay on screen while the Layer is on, where its Source asks
+    /// for that; empty otherwise.
+    pub attribution: &'static str,
 }
 
 /// Converts a screen colour to the linear colour the dot shader works in.
@@ -84,6 +112,11 @@ pub struct FeatureLayer {
     listed: Vec<bool>,
     listed_count: usize,
     dots: Vec<Instance>,
+    /// Counts every change to which Features are listed, so dots that do not depend
+    /// on the moment are only worked out again when something has changed.
+    generation: u64,
+    /// The highlight and generation the dots were last worked out for.
+    dots_for: Option<(Highlight, u64)>,
     /// When the Features on hand were fetched.
     fetched_at: Option<SystemTime>,
     /// True once the cache has been looked in for an earlier copy.
@@ -104,11 +137,13 @@ impl FeatureLayer {
             features: Vec::new(),
             positions: Vec::new(),
             names: Vec::new(),
-            class_on: vec![true; spec.classes.len()],
+            class_on: spec.classes.iter().map(|class| class.on).collect(),
             search: String::new(),
             listed: Vec::new(),
             listed_count: 0,
             dots: Vec::new(),
+            generation: 0,
+            dots_for: None,
             fetched_at: None,
             looked_in_cache: false,
             in_flight: None,
@@ -147,6 +182,7 @@ impl FeatureLayer {
             })
             .collect();
         self.listed_count = self.listed.iter().filter(|listed| **listed).count();
+        self.generation += 1;
     }
 
     /// Takes in a fetch that has finished and starts one if the copy on hand is stale.
@@ -230,10 +266,21 @@ impl FeatureLayer {
                 .until
                 .is_none_or(|until| at.0 < until.0)
                 .then_some(1.0),
+            Show::Always => Some(1.0),
         }
     }
 
     fn rebuild_dots(&mut self, at: JulianDate, highlight: Highlight) {
+        // Places that stay put look the same from one frame to the next unless the
+        // filter, the search, the data or the highlight has changed.
+        let wanted = (highlight, self.generation);
+        if self.spec.show == Show::Always
+            && self.dots_for == Some(wanted)
+            && self.dots.len() == self.features.len()
+        {
+            return;
+        }
+        self.dots_for = Some(wanted);
         let colors: Vec<[u8; 3]> = self
             .spec
             .classes
@@ -290,6 +337,7 @@ impl Layer for FeatureLayer {
         self.on = on;
         if !on {
             self.dots.clear();
+            self.dots_for = None;
         }
     }
 
@@ -421,7 +469,7 @@ impl Layer for FeatureLayer {
         }
         Some(FeatureCard {
             title,
-            sections: vec![feature.rows.clone()],
+            sections: vec![feature.card_rows()],
             details,
             notices: Vec::new(),
             source: self.spec.listing.source.to_owned(),
@@ -438,6 +486,10 @@ impl Layer for FeatureLayer {
 
     fn is_loading(&self) -> bool {
         self.on && self.fetched_at.is_none() && self.failure.is_none()
+    }
+
+    fn attribution(&self) -> Option<&'static str> {
+        (!self.spec.attribution.is_empty()).then_some(self.spec.attribution)
     }
 }
 
@@ -526,20 +578,63 @@ mod tests {
             refresh_every: Duration::from_secs(600),
         },
         classes: &[
-            Class {
-                label: "Big",
-                color: [255, 0, 0],
-            },
-            Class {
-                label: "Small",
-                color: [255, 255, 0],
-            },
+            Class::new("Big", [255, 0, 0]),
+            Class::new("Small", [255, 255, 0]),
         ],
         coverage: TimeCoverage::PresentAndPast { days: 7.0 },
         show: Show::Recent { days: 2.0 },
         dot_scale: |_| 2.0,
         note: "Only a test.",
+        attribution: "",
     };
+
+    /// The same events as places that stay put, with the second class filtered out
+    /// until asked for.
+    static PLACES: Spec = Spec {
+        name: "Test places",
+        theme: Theme::Places,
+        listing: SPEC.listing,
+        classes: &[
+            Class::new("Big", [255, 0, 0]),
+            Class::hidden("Small", [255, 255, 0]),
+        ],
+        coverage: TimeCoverage::AnyMoment,
+        show: Show::Always,
+        dot_scale: |_| 1.0,
+        note: "",
+        attribution: "Test credit",
+    };
+
+    #[test]
+    fn places_are_shown_at_any_moment_and_some_classes_start_hidden() {
+        let stub = Stub::answering(vec![Ok(EVENTS)]);
+        let mut layer = FeatureLayer::new(&PLACES, Arc::clone(&stub) as Arc<dyn Fetcher>, None);
+        assert_eq!(layer.attribution(), Some("Test credit"));
+        layer.set_on(true);
+        settle(&mut layer, SystemTime::now());
+        assert_eq!(layer.counts(), (1, 3));
+
+        // Years before any of them "happened", the one unfiltered place is still there.
+        layer.rebuild_dots(JulianDate(start().0 - 5_000.0), Highlight::default());
+        assert_eq!(shown(&layer), ["Alpha"]);
+
+        layer.class_on[1] = true;
+        layer.refilter();
+        layer.rebuild_dots(start(), Highlight::default());
+        assert_eq!(shown(&layer), ["Alpha", "Bravo", "Charlie"]);
+
+        // Selecting one changes its dot, and only then are the dots worked out again.
+        let before = layer.dots().to_vec();
+        layer.rebuild_dots(start(), Highlight::default());
+        assert_eq!(layer.dots(), before);
+        let highlight = Highlight {
+            selected: Some(2),
+            hovered: None,
+        };
+        layer.rebuild_dots(start(), highlight);
+        assert_ne!(layer.dots()[2], before[2]);
+        assert_eq!(layer.dots()[..2], before[..2]);
+    }
 
     const EVENTS: &str = "Alpha,0,1.0,10,20\nBravo,1,2.5,-5,100\nCharlie,1,3.0,40,-70";
 

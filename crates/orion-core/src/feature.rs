@@ -28,6 +28,9 @@ pub struct Feature {
     pub class: u8,
     /// What it shows about itself when selected.
     pub rows: Vec<CardRow>,
+    /// More of the same, held as one piece of text to keep a Layer of many thousands
+    /// of Features small: a line for each row, its label and value separated by a tab.
+    pub attributes: String,
     /// Longer text shown under the rows, a paragraph at a time.
     pub details: Vec<String>,
     /// Its outline or route, when it has one: lines of longitude then latitude in degrees.
@@ -47,6 +50,7 @@ impl Feature {
             size: 0.0,
             class: 0,
             rows: Vec::new(),
+            attributes: String::new(),
             details: Vec::new(),
             shape: Vec::new(),
         }
@@ -58,6 +62,16 @@ impl Feature {
         if !value.trim().is_empty() {
             self.rows.push(CardRow::new(label, value));
         }
+    }
+
+    /// Every row of the card: the ones held as rows, then the ones held as text.
+    pub fn card_rows(&self) -> Vec<CardRow> {
+        let from_text = self
+            .attributes
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(label, value)| CardRow::new(label, value));
+        self.rows.iter().cloned().chain(from_text).collect()
     }
 
     /// True if the place is a real one. Sources do publish coordinates that are not.
@@ -94,6 +108,21 @@ mod tests {
         feature.row("Depth", "10 km");
         feature.row("Felt by", "  ");
         assert_eq!(feature.rows, [CardRow::new("Depth", "10 km")]);
+    }
+
+    #[test]
+    fn rows_held_as_text_join_the_card_after_the_others() {
+        let mut feature = Feature::at("x", "Somewhere", 10.0, 20.0);
+        feature.row("Kind", "Airport");
+        feature.attributes = "Codes\tIATA LHR\nno tab here\nServes\tLondon\n".to_owned();
+        assert_eq!(
+            feature.card_rows(),
+            [
+                CardRow::new("Kind", "Airport"),
+                CardRow::new("Codes", "IATA LHR"),
+                CardRow::new("Serves", "London"),
+            ]
+        );
     }
 
     #[test]
