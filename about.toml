@@ -1,0 +1,35 @@
+# Configuration for cargo-about, which gathers the licence of every crate compiled
+# into Orion into one file that ships with each download.
+#
+#   cargo install cargo-about --locked --features cli
+#   cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES.html about.hbs
+
+# Licences a dependency may be under. Where a crate offers a choice, the first one
+# listed here is used. A crate under none of these fails the run, so a new licence
+# cannot slip in unnoticed.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    # Mozilla's root certificate list, used to check CelesTrak's certificate.
+    "CDLA-Permissive-2.0",
+    # One small crate behind the cache-folder lookup. It is used unmodified.
+    "MPL-2.0",
+    # The fonts bundled with egui.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+# Every platform a download is built for. Some crates are only compiled on one.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]

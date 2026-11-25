@@ -61,6 +61,30 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
         });
 }
 
+/// Draws the About panel: what Orion is built from and who to thank for it.
+pub fn draw_about(ctx: &egui::Context) {
+    egui::Window::new("About")
+        .default_pos([770.0, 50.0])
+        .default_open(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.set_max_width(320.0);
+            ui.label(format!("Orion {}", env!("CARGO_PKG_VERSION")));
+            ui.label("Open source under the MIT or Apache 2.0 licence, at your option.");
+
+            ui.separator();
+            ui.label("Positions are computed from published orbital data. They are estimates, not live measurements.");
+
+            ui.separator();
+            ui.label("Orbital data and catalogue: CelesTrak, from the catalogue published by the U.S. Space Force at Space-Track.org.");
+            ui.label("Earth imagery: NASA Blue Marble Next Generation and Black Marble 2016.");
+            ui.label("Stars: the Yale Bright Star Catalogue, 5th revised edition.");
+
+            ui.separator();
+            ui.label("The licences of the open-source libraries Orion is built from are in THIRD-PARTY-LICENSES.html, which comes with each download. On macOS it is inside the app, under Contents/Resources.");
+        });
+}
+
 /// How the camera behaves, as the View panel shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewChoices {

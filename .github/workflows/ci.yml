@@ -24,6 +24,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Fails if a dependency arrives under a licence that about.toml does not list.
+  licences:
+    name: Third-party licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+      - name: Check every dependency's licence
+        run: cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES.html about.hbs
+
   test:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

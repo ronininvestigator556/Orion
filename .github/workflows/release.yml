@@ -13,8 +13,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The licences of every crate compiled into Orion, gathered once and added to
+  # each platform's download.
+  notices:
+    name: Gather third-party licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+      - name: Generate the notices
+        run: cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES.html about.hbs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: third-party-licenses
+          path: THIRD-PARTY-LICENSES.html
+          if-no-files-found: error
+
   build:
     name: Build for ${{ matrix.platform }}
+    needs: notices
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,6 +57,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Fetch the third-party licences
+        uses: actions/download-artifact@v8
+        with:
+          name: third-party-licenses
+
       - name: Read the version from the tag
         id: version
         shell: bash
@@ -56,7 +81,8 @@ jobs:
           lipo -create -output target/orion-universal \
             target/aarch64-apple-darwin/release/orion \
             target/x86_64-apple-darwin/release/orion
-          packaging/macos/bundle.sh target/orion-universal "${{ steps.version.outputs.version }}" dist
+          packaging/macos/bundle.sh target/orion-universal "${{ steps.version.outputs.version }}" dist \
+            macos-universal README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html
 
       - name: Build and package for Windows
         if: matrix.platform == 'windows'
@@ -65,7 +91,7 @@ jobs:
           cargo build --release --locked --package orion-app
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive `
-            -Path target/release/orion.exe, README.md, LICENSE-MIT, LICENSE-APACHE `
+            -Path target/release/orion.exe, README.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-LICENSES.html `
             -DestinationPath "dist/Orion-${{ steps.version.outputs.version }}-windows-x86_64.zip"
 
       - name: Build and package for Linux
@@ -76,7 +102,8 @@ jobs:
           cargo build --release --locked --package orion-app
           name="orion-${{ steps.version.outputs.version }}-linux-x86_64"
           mkdir -p "dist/$name"
-          cp target/release/orion packaging/linux/orion.desktop README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          cp target/release/orion packaging/linux/orion.desktop \
+            README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html "dist/$name/"
           tar --create --gzip --file "dist/$name.tar.gz" --directory dist "$name"
 
       - uses: actions/upload-artifact@v7
@@ -94,6 +121,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
+          # Only the platform downloads; the licences are already inside each of them.
+          pattern: orion-*
           path: dist
           merge-multiple: true
       - name: Create the GitHub Release

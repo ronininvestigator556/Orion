@@ -6,9 +6,9 @@
     <string>Orion</string>
     <key>CFBundleDisplayName</key>
     <string>Orion</string>
-    <!-- Placeholder: change to a reverse-DNS name you control before the first release. -->
+    <!-- Built from the project's GitHub address, which is a name the project controls. -->
     <key>CFBundleIdentifier</key>
-    <string>dev.orion-app.Orion</string>
+    <string>io.github.ronininvestigator556.Orion</string>
     <key>CFBundleExecutable</key>
     <string>orion</string>
     <key>CFBundlePackageType</key>

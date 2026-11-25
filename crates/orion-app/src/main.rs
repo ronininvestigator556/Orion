@@ -361,6 +361,7 @@ impl Running {
             ui::draw_labels(ctx, &labels);
             found_pick = ui::draw_find(ctx, &mut filter, &found).or(found_pick);
             ui::draw_view(ctx, &mut view_choices, can_follow);
+            ui::draw_about(ctx);
             ui::draw(ctx, gpu, &diagnostics);
             refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
             clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
