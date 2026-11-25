@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Builds tools/countries.tsv, the table of countries that make_advisories.py places
-Travel Advisories by, from Natural Earth's public-domain map of the world's countries.
+"""Builds crates/orion-data/data/countries.tsv, the table of countries that Orion and
+make_advisories.py place a country by, from Natural Earth's public-domain map of the world's countries.
 
 Run with Python 3 and nothing else installed, on the 1:50m "Admin 0 - Countries" file
 from https://www.naturalearthdata.com saved as GeoJSON:
 
-    python3 tools/make_countries.py ne_50m_admin_0_countries.geojson tools/countries.tsv
+    python3 tools/make_countries.py ne_50m_admin_0_countries.geojson \
+        crates/orion-data/data/countries.tsv
 
 Each line is a country or territory: its two-letter ISO code, the two-letter code the
 U.S. government uses for it where that differs or is known (its advisories are filed

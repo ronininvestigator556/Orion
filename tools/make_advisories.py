@@ -18,7 +18,8 @@ Run with Python 3 and nothing else installed:
     python3 tools/make_advisories.py <folder>
 
 It writes <folder>/advisories.tsv: a heading, then one line for each country that at
-least one of the three has advice for. Countries are placed by tools/countries.tsv.
+least one of the three has advice for. Countries are placed by the table Orion itself
+carries, crates/orion-data/data/countries.tsv.
 To read the three lists from files on disk named us.json, uk.json and ca.json, as when
 trying a change, add --from-files <folder>.
 """
@@ -279,7 +280,8 @@ def main(arguments):
         sys.exit(__doc__)
     folder = arguments[0]
     os.makedirs(folder, exist_ok=True)
-    table = os.path.join(os.path.dirname(os.path.abspath(__file__)), "countries.tsv")
+    here = os.path.dirname(os.path.abspath(__file__))
+    table = os.path.join(here, "..", "crates", "orion-data", "data", "countries.tsv")
     with open(table, encoding="utf-8") as file:
         countries = read_countries(file.read())
 

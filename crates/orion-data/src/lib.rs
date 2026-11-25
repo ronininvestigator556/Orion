@@ -7,6 +7,7 @@
 pub mod advisories;
 mod cache;
 pub mod conflict;
+pub mod countries;
 pub mod disasters;
 pub mod hazards;
 pub mod import;
@@ -21,6 +22,7 @@ mod test_support;
 pub mod tiles;
 pub mod traffic;
 pub mod unrest;
+pub mod warnings;
 
 use std::fmt;
 use std::io;

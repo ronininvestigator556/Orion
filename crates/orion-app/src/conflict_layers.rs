@@ -1,12 +1,13 @@
 //! The Layers under the Conflict Theme: Armed Conflicts, for a view of where the
-//! world's fighting is, and the Conflict Events beneath them.
+//! world's fighting is, the Conflict Events beneath them, and the Airspace Warnings
+//! that an aviation authority publishes about conflict zones.
 //!
 //! Both come from the Uppsala Conflict Data Program, which is careful and so is
 //! weeks behind: this is where there has been fighting lately, never where there is
 //! fighting today.
 
 use orion_core::layer::{Theme, TimeCoverage};
-use orion_data::conflict;
+use orion_data::{conflict, warnings};
 
 use crate::feature_layer::{Class, Show, Spec};
 
@@ -60,8 +61,25 @@ pub static CONFLICT_EVENTS: Spec = Spec {
     ring_km: 0.0,
 };
 
+pub static AIRSPACE_WARNINGS: Spec = Spec {
+    name: "Airspace warnings",
+    theme: Theme::Conflict,
+    listing: warnings::AIRSPACE_WARNINGS,
+    classes: &[Class::new("In force", [79, 195, 247])],
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::InForce,
+    dot_scale: |_| 2.4,
+    note: "The countries whose airspace Europe's aviation safety agency warns airlines \
+           about because of a conflict. A warning speaks for the airspace, not for the \
+           point it is marked at, and other authorities draw the lines differently.",
+    attribution: "Airspace warnings: © European Union Aviation Safety Agency",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
 /// Every Layer in this module, in the order they are listed.
-pub static ALL: [&Spec; 2] = [&ARMED_CONFLICTS, &CONFLICT_EVENTS];
+pub static ALL: [&Spec; 3] = [&ARMED_CONFLICTS, &CONFLICT_EVENTS, &AIRSPACE_WARNINGS];
 
 #[cfg(test)]
 mod tests {
@@ -72,8 +90,17 @@ mod tests {
     #[test]
     fn conflict_is_its_own_theme_with_the_high_level_view_first() {
         let names: Vec<&str> = ALL.iter().map(|spec| spec.name).collect();
-        assert_eq!(names, ["Armed conflicts", "Conflict events"]);
-        for spec in ALL {
+        assert_eq!(
+            names,
+            ["Armed conflicts", "Conflict events", "Airspace warnings"]
+        );
+        assert_eq!(AIRSPACE_WARNINGS.theme, Theme::Conflict);
+        assert!(
+            AIRSPACE_WARNINGS
+                .attribution
+                .contains("Aviation Safety Agency")
+        );
+        for spec in [&ARMED_CONFLICTS, &CONFLICT_EVENTS] {
             assert_eq!(spec.theme, Theme::Conflict, "{}", spec.name);
             // The Source asks to be credited, and both say how old the picture is.
             assert!(spec.attribution.contains("Uppsala"), "{}", spec.name);
