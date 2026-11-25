@@ -11,6 +11,7 @@ use winit::window::Window;
 use crate::globe::Globe;
 use crate::lines::{Lines, Segment};
 use crate::objects::{Instance, Objects, View};
+use crate::stars::Stars;
 
 /// Background colour behind the globe, in linear RGB.
 const SPACE: wgpu::Color = wgpu::Color {
@@ -37,6 +38,8 @@ pub struct Scene<'a> {
     pub objects: &'a [Instance],
     /// Orbit Paths and Ground Tracks.
     pub lines: &'a [Segment],
+    /// How far, in radians, the Earth-fixed frame is turned east of the stars.
+    pub sidereal_angle: f32,
 }
 
 pub struct Renderer {
@@ -50,6 +53,7 @@ pub struct Renderer {
     gpu_info: GpuInfo,
 
     globe: Globe,
+    stars: Stars,
     lines: Lines,
     objects: Objects,
 
@@ -100,6 +104,7 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let globe = Globe::new(&device, &queue, scene_format)?;
+        let stars = Stars::new(&device, scene_format)?;
         let lines = Lines::new(&device, scene_format);
         let objects = Objects::new(&device, scene_format);
 
@@ -133,6 +138,7 @@ impl Renderer {
             scene_format,
             gpu_info,
             globe,
+            stars,
             lines,
             objects,
             egui_ctx,
@@ -202,6 +208,13 @@ impl Renderer {
             viewport: [self.config.width, self.config.height],
             scale_factor: window.scale_factor() as f32,
         };
+        self.stars.update(
+            &self.queue,
+            view.view_projection,
+            view.viewport,
+            view.scale_factor,
+            scene.sidereal_angle,
+        );
         self.lines
             .update(&self.device, &self.queue, &view, scene.lines);
         self.objects
@@ -258,6 +271,8 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            // Farthest first: stars, then the globe that covers the ones behind it.
+            self.stars.draw(&mut pass);
             self.globe.draw(&mut pass);
             // Lines go under the dots so a dot on a line stays readable.
             self.lines.draw(&mut pass);

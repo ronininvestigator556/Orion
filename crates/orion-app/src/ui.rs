@@ -9,6 +9,7 @@ use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
 use orion_core::filter::{Filter, Group};
 use orion_core::time::JulianDate;
 
+use crate::camera::ViewFrame;
 use crate::feed::{Origin, Refresh, Status};
 use crate::renderer::GpuInfo;
 use crate::tracked::Details;
@@ -57,6 +58,38 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
                 "Propagation takes {:.2} ms",
                 tracked.propagation_ms
             ));
+        });
+}
+
+/// How the camera behaves, as the View panel shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewChoices {
+    pub frame: ViewFrame,
+    pub following: bool,
+}
+
+/// Draws the View panel, which edits `choices` in place. `can_follow` says whether a
+/// Tracked Object is selected for Follow Mode to follow.
+pub fn draw_view(ctx: &egui::Context, choices: &mut ViewChoices, can_follow: bool) {
+    egui::Window::new("View")
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.radio_value(
+                &mut choices.frame,
+                ViewFrame::EarthFixed,
+                "Earth-Fixed View",
+            )
+            .on_hover_text("Earth stays still and objects move over it.");
+            ui.radio_value(&mut choices.frame, ViewFrame::StarFixed, "Star-Fixed View")
+                .on_hover_text("The stars stay still and Earth turns beneath the orbits.");
+            ui.separator();
+            ui.add_enabled(
+                can_follow,
+                egui::Checkbox::new(&mut choices.following, "Follow Mode"),
+            )
+            .on_hover_text("Keeps the selected object centred as it moves.")
+            .on_disabled_hover_text("Select an object to follow it.");
         });
 }
 

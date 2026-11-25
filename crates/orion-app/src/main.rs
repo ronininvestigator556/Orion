@@ -10,6 +10,7 @@ mod lines;
 mod objects;
 mod picking;
 mod renderer;
+mod stars;
 mod tracked;
 mod ui;
 
@@ -29,7 +30,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use camera::OrbitCamera;
+use camera::{CameraRig, ViewFrame};
 use feed::Feed;
 use lines::Segment;
 use picking::PickView;
@@ -83,10 +84,14 @@ struct Options {
     ground_track: bool,
     /// Text to put in the Find panel's search box at launch.
     find: Option<String>,
+    /// Start in Star-Fixed View.
+    star_fixed: bool,
+    /// Start in Follow Mode, which needs `--select` to have something to follow.
+    follow: bool,
 }
 
-const USAGE: &str =
-    "usage: orion [--select <catalogue number>] [--ground-track] [--find <name or number>]";
+const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
+     [--star-fixed] [--find <name or number>]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
     let mut options = Options::default();
@@ -102,6 +107,8 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                     })?);
             }
             "--ground-track" => options.ground_track = true,
+            "--star-fixed" => options.star_fixed = true,
+            "--follow" => options.follow = true,
             "--find" => {
                 options.find = Some(
                     arguments
@@ -126,7 +133,9 @@ struct App {
 struct Running {
     window: Arc<Window>,
     renderer: Renderer,
-    camera: OrbitCamera,
+    rig: CameraRig,
+    /// How far, in radians, Earth has turned against the stars at the moment on show.
+    sidereal_angle: f32,
     tracked: Tracked,
     feed: Feed,
     clock: SimulationClock,
@@ -187,10 +196,18 @@ impl Running {
             })
         });
 
+        let sidereal_angle = julian_date_now().greenwich_sidereal_angle() as f32;
+        let mut rig = CameraRig::default();
+        if options.star_fixed {
+            rig.set_frame(ViewFrame::StarFixed, sidereal_angle);
+        }
+        rig.set_following(options.follow && selected.is_some());
+
         Ok(Self {
             window,
             renderer,
-            camera: OrbitCamera::default(),
+            rig,
+            sidereal_angle,
             tracked,
             feed,
             clock: SimulationClock::new(julian_date_now()),
@@ -218,6 +235,8 @@ impl Running {
         // Everything in the scene is shown for the Simulation Clock's moment, `now`.
         let real_now = julian_date_now();
         let now = self.clock.advance(real_now, elapsed_ms as f64 / 1000.0);
+        let previous_sidereal_angle = self.sidereal_angle;
+        self.sidereal_angle = now.greenwich_sidereal_angle() as f32;
         if let Some(refreshed) = self.feed.poll() {
             self.tracked
                 .replace(refreshed.objects, refreshed.records, refreshed.groups);
@@ -230,7 +249,9 @@ impl Running {
         }
 
         // Hovering uses the dots from the previous frame, a few milliseconds old.
-        let pick_view = self.pick_view();
+        // The dots are where they were at the previous frame's moment, so they are picked
+        // with the camera as it stood then.
+        let pick_view = self.pick_view_at(previous_sidereal_angle);
         self.hovered = match self.cursor {
             Some(cursor) if !self.dragging && !self.renderer.pointer_over_interface() => {
                 self.pick(&pick_view, cursor)
@@ -246,6 +267,17 @@ impl Running {
                 hovered: self.hovered,
             },
         );
+
+        // Follow Mode needs something to follow, and moves the camera before it is used.
+        if selected.is_none() {
+            self.rig.set_following(false);
+        }
+        let followed = selected
+            .and_then(|index| self.tracked.instances().get(index))
+            .filter(|instance| !instance.is_hidden())
+            .map(|instance| instance.position());
+        self.rig.follow(followed, self.sidereal_angle);
+        let pick_view = self.pick_view();
 
         self.segments.clear();
         if let Some(index) = selected {
@@ -263,6 +295,7 @@ impl Running {
             sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
             objects: self.tracked.instances(),
             lines: &self.segments,
+            sidereal_angle: self.sidereal_angle,
         };
 
         // Name the selected and hovered objects next to their dots.
@@ -316,12 +349,18 @@ impl Running {
         let mut refresh_requested = false;
         let mut show_ground_track = self.show_ground_track;
         let mut selection_actions = ui::SelectionActions::default();
+        let mut view_choices = ui::ViewChoices {
+            frame: self.rig.frame(),
+            following: self.rig.is_following(),
+        };
+        let can_follow = selected.is_some();
         let mut clock_action = None;
         let clock = self.clock;
         let clock_panel = &mut self.clock_panel;
         self.renderer.render(&self.window, &scene, |ctx, gpu| {
             ui::draw_labels(ctx, &labels);
             found_pick = ui::draw_find(ctx, &mut filter, &found).or(found_pick);
+            ui::draw_view(ctx, &mut view_choices, can_follow);
             ui::draw(ctx, gpu, &diagnostics);
             refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
             clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
@@ -347,6 +386,8 @@ impl Running {
             Some(ui::ClockAction::ReturnToLive) => self.clock.return_to_live(real_now),
             None => {}
         }
+        self.rig.set_frame(view_choices.frame, self.sidereal_angle);
+        self.rig.set_following(view_choices.following && can_follow);
         if selection_actions.clear {
             self.selected = None;
         }
@@ -360,12 +401,16 @@ impl Running {
 
     /// The camera and window facts that relate the scene to the cursor, for this frame.
     fn pick_view(&self) -> PickView {
+        self.pick_view_at(self.sidereal_angle)
+    }
+
+    /// The same, for the camera as it stands when Earth has turned by `sidereal_angle`.
+    fn pick_view_at(&self, sidereal_angle: f32) -> PickView {
         let size = self.window.inner_size();
+        let camera = self.rig.scene_camera(sidereal_angle);
         PickView {
-            view_projection: self
-                .camera
-                .view_projection(size.width as f32 / size.height.max(1) as f32),
-            camera_position: self.camera.position(),
+            view_projection: camera.view_projection(size.width as f32 / size.height.max(1) as f32),
+            camera_position: camera.position(),
             viewport: Vec2::new(size.width as f32, size.height as f32),
         }
     }
@@ -394,7 +439,7 @@ impl Running {
         });
         let instance = self.tracked.instances().get(index);
         if let Some(instance) = instance.filter(|instance| !instance.is_hidden()) {
-            self.camera.face(instance.position());
+            self.rig.face(instance.position(), self.sidereal_angle);
         }
     }
 
@@ -436,7 +481,7 @@ impl Running {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let (true, Some(previous)) = (self.dragging, self.cursor) {
-                    self.camera.drag(
+                    self.rig.drag(
                         (position.x - previous.x) as f32,
                         (position.y - previous.y) as f32,
                         self.window.inner_size().height as f32,
@@ -452,7 +497,7 @@ impl Running {
                         pixels.y as f32 / PIXELS_PER_SCROLL_STEP
                     }
                 };
-                self.camera.zoom(steps);
+                self.rig.zoom(steps);
             }
             _ => {}
         }
@@ -526,8 +571,12 @@ mod tests {
                 select: Some(25_544),
                 ground_track: true,
                 find: None,
+                star_fixed: false,
+                follow: false,
             }
         );
+        let views = parse(&["--star-fixed", "--follow"]).unwrap();
+        assert!(views.star_fixed && views.follow);
         assert_eq!(
             parse(&["--find", "noaa 2"]).unwrap().find.as_deref(),
             Some("noaa 2")

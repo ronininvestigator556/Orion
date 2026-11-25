@@ -60,6 +60,14 @@ impl OrbitCamera {
         self.latitude = direction.z.asin().clamp(-MAX_LATITUDE, MAX_LATITUDE);
     }
 
+    /// The same camera turned east about Earth's axis by `angle` radians.
+    fn turned(self, angle: f32) -> Self {
+        Self {
+            longitude: (self.longitude + angle).rem_euclid(std::f32::consts::TAU),
+            ..self
+        }
+    }
+
     /// Moves towards the globe for positive `steps` and away for negative ones.
     /// Each step changes the altitude by a fixed fraction, so zooming feels even at any height.
     pub fn zoom(&mut self, steps: f32) {
@@ -82,9 +90,184 @@ impl OrbitCamera {
     }
 }
 
+/// What the camera keeps still against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewFrame {
+    /// Earth stays still and Tracked Objects move over it.
+    #[default]
+    EarthFixed,
+    /// The stars stay still and Earth rotates beneath the orbits.
+    StarFixed,
+}
+
+/// The camera together with the ways it moves by itself: turning with the stars in
+/// Star-Fixed View, and keeping an object centred in Follow Mode.
+///
+/// The scene is always drawn in the Earth-fixed frame. Methods that need to relate
+/// that frame to the stars take the sidereal angle: how far, in radians, the
+/// Earth-fixed frame is turned east of the inertial frame at the moment on show.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CameraRig {
+    /// The camera in the frame it keeps still against. In Star-Fixed View its longitude
+    /// is measured from the inertial +X axis instead of from Greenwich.
+    camera: OrbitCamera,
+    frame: ViewFrame,
+    following: bool,
+}
+
+impl CameraRig {
+    /// The camera in the Earth-fixed frame, ready to draw the scene with.
+    pub fn scene_camera(&self, sidereal_angle: f32) -> OrbitCamera {
+        match self.frame {
+            ViewFrame::EarthFixed => self.camera,
+            // A camera fixed against the stars slips west over the turning Earth.
+            ViewFrame::StarFixed => self.camera.turned(-sidereal_angle),
+        }
+    }
+
+    pub fn frame(&self) -> ViewFrame {
+        self.frame
+    }
+
+    /// Changes what the camera keeps still against, without moving the view.
+    pub fn set_frame(&mut self, frame: ViewFrame, sidereal_angle: f32) {
+        if frame == self.frame {
+            return;
+        }
+        self.camera = match frame {
+            ViewFrame::StarFixed => self.camera.turned(sidereal_angle),
+            ViewFrame::EarthFixed => self.camera.turned(-sidereal_angle),
+        };
+        self.frame = frame;
+    }
+
+    pub fn is_following(&self) -> bool {
+        self.following
+    }
+
+    pub fn set_following(&mut self, following: bool) {
+        self.following = following;
+    }
+
+    /// Turns the globe by hand, which ends Follow Mode: the two would fight.
+    pub fn drag(&mut self, dx: f32, dy: f32, viewport_height: f32) {
+        self.following = false;
+        self.camera.drag(dx, dy, viewport_height);
+    }
+
+    pub fn zoom(&mut self, steps: f32) {
+        self.camera.zoom(steps);
+    }
+
+    /// Turns the camera to look straight down on `position`, given in the scene's
+    /// Earth-fixed frame.
+    pub fn face(&mut self, position: Vec3, sidereal_angle: f32) {
+        if position.try_normalize().is_none() {
+            return;
+        }
+        self.camera.face(position);
+        if self.frame == ViewFrame::StarFixed {
+            self.camera = self.camera.turned(sidereal_angle);
+        }
+    }
+
+    /// In Follow Mode, keeps `target` centred. Call once per frame with the followed
+    /// object's position in the scene, or `None` if it has none.
+    pub fn follow(&mut self, target: Option<Vec3>, sidereal_angle: f32) {
+        if let (true, Some(target)) = (self.following, target) {
+            self.face(target, sidereal_angle);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a point of the scene lands on screen, as x and y from -1 to 1.
+    fn on_screen(camera: OrbitCamera, point: glam::Vec4) -> glam::Vec2 {
+        let clip = camera.view_projection(1.5) * point;
+        clip.truncate().truncate() / clip.w
+    }
+
+    /// A direction fixed against the stars, as it appears in the Earth-fixed scene
+    /// once Earth has turned by `sidereal_angle`.
+    fn star_in_scene(sidereal_angle: f32) -> glam::Vec4 {
+        let star = Vec3::new(0.8, 0.5, 0.33).normalize();
+        (glam::Quat::from_rotation_z(-sidereal_angle) * star).extend(0.0)
+    }
+
+    #[test]
+    fn in_earth_fixed_view_the_ground_stays_put_and_the_stars_drift() {
+        let rig = CameraRig::default();
+        let ground = Vec3::new(1.0, 0.1, 0.3).normalize().extend(1.0);
+
+        let (early, late) = (rig.scene_camera(0.3), rig.scene_camera(0.9));
+        assert_eq!(early, late);
+        assert_eq!(on_screen(early, ground), on_screen(late, ground));
+        let drift =
+            on_screen(early, star_in_scene(0.3)).distance(on_screen(late, star_in_scene(0.9)));
+        assert!(drift > 0.1, "the star only moved {drift}");
+    }
+
+    #[test]
+    fn in_star_fixed_view_the_stars_stay_put_and_the_ground_drifts() {
+        let mut rig = CameraRig::default();
+        rig.set_frame(ViewFrame::StarFixed, 0.3);
+        let ground = Vec3::new(1.0, 0.1, 0.3).normalize().extend(1.0);
+
+        let (early, late) = (rig.scene_camera(0.3), rig.scene_camera(0.9));
+        let star_shift =
+            on_screen(early, star_in_scene(0.3)).distance(on_screen(late, star_in_scene(0.9)));
+        assert!(star_shift < 1e-4, "the star moved {star_shift}");
+        let ground_shift = on_screen(early, ground).distance(on_screen(late, ground));
+        assert!(ground_shift > 0.1, "the ground only moved {ground_shift}");
+    }
+
+    #[test]
+    fn switching_views_does_not_move_the_picture() {
+        let mut rig = CameraRig::default();
+        let before = rig.scene_camera(1.2).position();
+
+        rig.set_frame(ViewFrame::StarFixed, 1.2);
+        assert_eq!(rig.frame(), ViewFrame::StarFixed);
+        assert!(rig.scene_camera(1.2).position().abs_diff_eq(before, 1e-5));
+
+        rig.set_frame(ViewFrame::EarthFixed, 1.2);
+        assert!(rig.scene_camera(1.2).position().abs_diff_eq(before, 1e-5));
+    }
+
+    #[test]
+    fn follow_mode_keeps_the_target_centred_in_either_view() {
+        for frame in [ViewFrame::EarthFixed, ViewFrame::StarFixed] {
+            let mut rig = CameraRig::default();
+            rig.set_frame(frame, 2.0);
+            let target = Vec3::new(-0.3, 0.9, 0.4).normalize() * 1.07;
+
+            // Nothing happens until Follow Mode is on.
+            let before = rig;
+            rig.follow(Some(target), 2.0);
+            assert_eq!(rig, before);
+
+            rig.set_following(true);
+            rig.follow(Some(target), 2.0);
+            let centre = on_screen(rig.scene_camera(2.0), target.extend(1.0));
+            assert!(centre.length() < 1e-4, "{frame:?}: {centre}");
+
+            // An object with no Position leaves the camera where it was.
+            let held = rig;
+            rig.follow(None, 2.5);
+            assert_eq!(rig, held);
+        }
+    }
+
+    #[test]
+    fn dragging_ends_follow_mode() {
+        let mut rig = CameraRig::default();
+        rig.set_following(true);
+        rig.drag(10.0, 0.0, 800.0);
+        assert!(!rig.is_following());
+    }
 
     fn camera(longitude_deg: f32, latitude_deg: f32, distance: f32) -> OrbitCamera {
         OrbitCamera {
