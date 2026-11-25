@@ -9,6 +9,7 @@ use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 use crate::globe::Globe;
+use crate::objects::{Instance, Objects, View};
 
 /// Background colour behind the globe, in linear RGB.
 const SPACE: wgpu::Color = wgpu::Color {
@@ -25,10 +26,14 @@ pub struct GpuInfo {
 }
 
 /// What to draw this frame, in the Earth-fixed frame.
-pub struct Scene {
+pub struct Scene<'a> {
     pub view_projection: Mat4,
+    /// Camera position in Earth radii.
+    pub camera_position: Vec3,
     /// Unit vector from Earth's centre to the Sun.
     pub sun_direction: Vec3,
+    /// One dot per Tracked Object.
+    pub objects: &'a [Instance],
 }
 
 pub struct Renderer {
@@ -42,6 +47,7 @@ pub struct Renderer {
     gpu_info: GpuInfo,
 
     globe: Globe,
+    objects: Objects,
 
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -90,6 +96,7 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let globe = Globe::new(&device, &queue, scene_format)?;
+        let objects = Objects::new(&device, scene_format);
 
         let info = adapter.get_info();
         let gpu_info = GpuInfo {
@@ -121,6 +128,7 @@ impl Renderer {
             scene_format,
             gpu_info,
             globe,
+            objects,
             egui_ctx,
             egui_state,
             egui_renderer,
@@ -147,7 +155,7 @@ impl Renderer {
     pub fn render(
         &mut self,
         window: &Window,
-        scene: &Scene,
+        scene: &Scene<'_>,
         mut build_ui: impl FnMut(&egui::Context, &GpuInfo),
     ) {
         let mut reconfigure_after_present = false;
@@ -177,6 +185,17 @@ impl Renderer {
 
         self.globe
             .update(&self.queue, scene.view_projection, scene.sun_direction);
+        self.objects.update(
+            &self.device,
+            &self.queue,
+            &View {
+                view_projection: scene.view_projection,
+                camera_position: scene.camera_position,
+                viewport: [self.config.width, self.config.height],
+                scale_factor: window.scale_factor() as f32,
+            },
+            scene.objects,
+        );
 
         let raw_input = self.egui_state.take_egui_input(window);
         let gpu_info = &self.gpu_info;
@@ -230,6 +249,7 @@ impl Renderer {
                 ..Default::default()
             });
             self.globe.draw(&mut pass);
+            self.objects.draw(&mut pass);
         }
 
         {

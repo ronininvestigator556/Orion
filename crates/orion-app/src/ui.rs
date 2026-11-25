@@ -3,8 +3,21 @@
 use orion_core::sun::SurfacePoint;
 
 use crate::renderer::GpuInfo;
+use crate::tracked::Summary;
 
-pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, frame_ms: f32, subsolar: SurfacePoint) {
+/// Everything the diagnostics panel reports for one frame.
+pub struct Diagnostics {
+    pub frame_ms: f32,
+    pub subsolar: SurfacePoint,
+    pub tracked: Summary,
+}
+
+pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, diagnostics: &Diagnostics) {
+    let Diagnostics {
+        frame_ms,
+        subsolar,
+        tracked,
+    } = *diagnostics;
     egui::Window::new("Diagnostics")
         .default_pos([12.0, 12.0])
         .resizable(false)
@@ -17,6 +30,23 @@ pub fn draw(ctx: &egui::Context, gpu: &GpuInfo, frame_ms: f32, subsolar: Surface
                 ));
             }
             ui.label(format!("Sun overhead at {}", format_point(subsolar)));
+
+            ui.separator();
+            ui.label(format!(
+                "{} Satellites, {} Rocket Bodies, {} Debris",
+                tracked.satellites, tracked.rocket_bodies, tracked.debris
+            ));
+            if tracked.without_position > 0 {
+                ui.label(format!("{} have no Position now", tracked.without_position));
+            }
+            ui.label(format!(
+                "Median Element Age is {:.1} days",
+                tracked.median_element_age_days
+            ));
+            ui.label(format!(
+                "Propagation takes {:.2} ms",
+                tracked.propagation_ms
+            ));
         });
 }
 

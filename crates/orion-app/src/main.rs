@@ -2,7 +2,9 @@
 
 mod camera;
 mod globe;
+mod objects;
 mod renderer;
+mod tracked;
 mod ui;
 
 use std::sync::Arc;
@@ -20,6 +22,7 @@ use winit::window::{Window, WindowId};
 
 use camera::OrbitCamera;
 use renderer::{Renderer, Scene};
+use tracked::Tracked;
 
 /// Trackpads report scrolling in pixels; this many count as one zoom step.
 const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
@@ -51,6 +54,7 @@ struct Running {
     window: Arc<Window>,
     renderer: Renderer,
     camera: OrbitCamera,
+    tracked: Tracked,
     /// True while the left button is held after being pressed over the scene.
     dragging: bool,
     cursor: Option<PhysicalPosition<f64>>,
@@ -77,6 +81,7 @@ impl Running {
             window,
             renderer,
             camera: OrbitCamera::default(),
+            tracked: Tracked::from_snapshot()?,
             dragging: false,
             cursor: None,
             last_frame: Instant::now(),
@@ -93,18 +98,25 @@ impl Running {
 
         // Until the Simulation Clock exists, the scene always shows the present moment.
         let now = julian_date_now();
+        self.tracked.propagate(now);
+
         let size = self.window.inner_size();
         let scene = Scene {
             view_projection: self
                 .camera
                 .view_projection(size.width as f32 / size.height.max(1) as f32),
+            camera_position: self.camera.position(),
             sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
+            objects: self.tracked.instances(),
         };
 
-        let frame_ms = self.frame_ms;
-        let subsolar = subsolar_point(now);
+        let diagnostics = ui::Diagnostics {
+            frame_ms: self.frame_ms,
+            subsolar: subsolar_point(now),
+            tracked: self.tracked.summary(now),
+        };
         self.renderer.render(&self.window, &scene, |ctx, gpu| {
-            ui::draw(ctx, gpu, frame_ms, subsolar);
+            ui::draw(ctx, gpu, &diagnostics);
         });
 
         // Positions change continuously, so draw every frame; vsync paces the loop.

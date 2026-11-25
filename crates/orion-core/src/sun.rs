@@ -4,6 +4,7 @@
 //! to about 0.01 degrees between 1950 and 2050. That is far finer than a day/night
 //! terminator needs.
 
+use crate::frames::inertial_to_earth_fixed;
 use crate::time::JulianDate;
 
 /// A place on Earth's surface, in degrees. North and east are positive.
@@ -16,11 +17,7 @@ pub struct SurfacePoint {
 /// Unit vector from Earth's centre to the Sun in the Earth-fixed frame
 /// (see the crate documentation for the axes).
 pub fn sun_direction(at: JulianDate) -> [f64; 3] {
-    let [x, y, z] = sun_direction_inertial(at);
-    // Earth has turned eastward by the sidereal angle, so seen from the ground the
-    // Sun sits that far to the west of its inertial direction.
-    let (sin, cos) = at.greenwich_sidereal_angle().sin_cos();
-    [x * cos + y * sin, -x * sin + y * cos, z]
+    inertial_to_earth_fixed(sun_direction_inertial(at), at)
 }
 
 /// The point on Earth's surface where the Sun is directly overhead.

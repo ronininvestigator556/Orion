@@ -44,6 +44,10 @@ _Avoid_: Timestamp, element date
 The time between an Element Set's Epoch and the Simulation Clock; the larger it is, the less a Position can be trusted.
 _Avoid_: Staleness, data age
 
+**Snapshot**:
+A set of Element Sets captured at one moment and shipped inside the app, used when no fresher ones are available.
+_Avoid_: Bundle, seed data, offline data
+
 **Position**:
 Where a Tracked Object is computed to be at a given moment; an estimate derived from an Element Set, never a measurement.
 _Avoid_: Location, live position, real position

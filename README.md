@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. No Tracked Objects are shown yet.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions from a Snapshot of Element Sets bundled with the app, so Positions drift as the Snapshot ages. Live data is next.
 
 ## Run it
 
@@ -22,6 +22,7 @@ cargo run
 ## Credits
 
 - Earth imagery: NASA Blue Marble Next Generation and NASA Black Marble 2016, courtesy of NASA Earth Observatory. Both are in the public domain.
+- Orbital data: Element Sets from [CelesTrak](https://celestrak.org), derived from the catalogue published by the U.S. Space Force at Space-Track.org.
 
 ## Licence
 

@@ -12,6 +12,8 @@
 //!   and +Y through latitude 0, longitude 90 east.
 //! - **Inertial**: fixed against the stars. +X points towards the March equinox.
 
+pub mod catalogue;
+pub mod frames;
 pub mod sun;
 pub mod time;
 
