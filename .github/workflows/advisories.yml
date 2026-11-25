@@ -1,0 +1,39 @@
+name: Travel Advisories
+
+# Joins the Travel Advisories of the United States, the United Kingdom and Canada
+# into the one small file every copy of Orion downloads, and publishes it beside the
+# Extracts (ADR 0004). Advice changes a few times a week, so four times a day is
+# plenty.
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: advisories
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  join:
+    name: Join and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      # The job stops without writing if any government's list has changed shape,
+      # so a broken list leaves the last good file in place.
+      - name: Join the three governments' advice
+        run: python3 tools/make_advisories.py advisories
+      - name: Publish
+        run: |
+          if ! gh release view extracts >/dev/null 2>&1; then
+            gh release create extracts --latest=false --title "Extracts" \
+              --notes "Files of places that Orion downloads, rebuilt on a schedule. This is not a version of the app: for that, see the other releases."
+          fi
+          gh release upload extracts advisories/advisories.tsv --clobber

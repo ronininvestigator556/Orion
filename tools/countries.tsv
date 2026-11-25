@@ -1,0 +1,238 @@
+# Countries, from Natural Earth (public domain). Built by make_countries.py.
+AD	AN	Andorra	42.548	1.539
+AE	AE	United Arab Emirates	23.466	54.547
+AF	AF	Afghanistan	34.164	66.497
+AG	AC	Antigua and Barbuda	17.352	-61.791
+AI	AV	Anguilla	18.243	-63.026
+AL	AL	Albania	40.655	20.114
+AM	AM	Armenia	40.459	44.801
+AO	AO	Angola	-12.183	17.984
+AQ	AY	Antarctica	-79.843	35.885
+AR	AR	Argentina	-33.501	-64.173
+AS	AQ	American Samoa	-14.327	-170.747
+AT	AU	Austria	47.519	14.131
+AU	AS	Australia	-24.130	134.050
+AW	AA	Aruba	12.517	-69.973
+AX		Åland	60.156	19.870
+AZ	AJ	Azerbaijan	40.402	47.211
+BA	BK	Bosnia and Herzegovina	44.091	18.068
+BB	BB	Barbados	13.164	-59.569
+BD	BG	Bangladesh	24.215	89.685
+BE	BE	Belgium	50.785	4.800
+BF	UV	Burkina Faso	12.673	-1.364
+BG	BU	Bulgaria	42.509	25.157
+BH	BA	Bahrain	26.056	50.555
+BI	BY	Burundi	-3.333	29.917
+BJ	BN	Benin	10.325	2.352
+BL	TB	Saint Barthélemy	17.902	-62.833
+BM	BD	Bermuda	32.297	-64.764
+BN	BX	Brunei	4.448	114.552
+BO	BL	Bolivia	-16.666	-64.593
+BR	BR	Brazil	-12.099	-49.559
+BS	BF	The Bahamas	26.402	-77.147
+BT	BT	Bhutan	27.537	90.040
+BW	BC	Botswana	-22.103	24.179
+BY	BO	Belarus	53.822	28.418
+BZ	BH	Belize	17.202	-88.713
+CA	CA	Canada	60.324	-101.911
+CD	CG	Democratic Republic of the Congo	-1.858	23.459
+CF	CT	Central African Republic	6.990	20.907
+CG	CF	Republic of the Congo	0.142	15.900
+CH	SZ	Switzerland	46.719	7.464
+CI	IV	Ivory Coast	7.491	-5.569
+CK	CW	Cook Islands	-21.216	-159.786
+CL	CI	Chile	-38.152	-72.319
+CM	CM	Cameroon	4.585	12.473
+CN	CH	People's Republic of China	32.498	106.337
+CO	CO	Colombia	3.373	-73.174
+CR	CS	Costa Rica	10.065	-84.078
+CU	CU	Cuba	21.334	-77.976
+CV	CV	Cape Verde	15.075	-23.639
+CW	NT	Curaçao	12.145	-68.921
+CY	CY	Cyprus	34.913	33.084
+CZ	EZ	Czech Republic	49.882	15.378
+DE	GM	Germany	50.962	9.678
+DJ	DJ	Djibouti	11.976	42.499
+DK	DA	Denmark	55.967	9.018
+DM	DO	Dominica	15.459	-61.345
+DO	DR	Dominican Republic	19.104	-70.654
+DZ	AG	Algeria	27.397	2.808
+EC	EC	Ecuador	-1.259	-78.188
+EE	EN	Estonia	58.725	25.867
+EG	EG	Egypt	26.186	29.446
+EH	WI	Western Sahara	23.968	-12.630
+ER	ER	Eritrea	15.787	38.286
+ES	SP	Spain	40.091	-3.465
+ET	ET	Ethiopia	8.033	39.089
+FI	FI	Finland	63.252	27.276
+FJ	FJ	Fiji	-17.826	177.975
+FK	FK	Falkland Islands	-51.609	-58.739
+FM	FM	Federated States of Micronesia	6.888	158.234
+FO	FO	Faroe Islands	62.186	-7.058
+FR	FR	France	46.696	2.552
+GA	GB	Gabon	-0.438	11.836
+GB	UK	United Kingdom	54.403	-2.116
+GD	GJ	Grenada	12.113	-61.680
+GE	GG	Georgia	41.870	43.736
+GG	GK	Guernsey	49.464	-2.562
+GH	GH	Ghana	7.718	-1.037
+GL	GL	Greenland	74.319	-39.335
+GM	GA	The Gambia	13.642	-14.998
+GN	GV	Guinea	10.619	-10.016
+GQ	EK	Equatorial Guinea	2.333	8.990
+GR	GR	Greece	39.493	21.726
+GS	SX	South Georgia and the South Sandwich Islands	-55.683	-31.063
+GT	GT	Guatemala	14.982	-90.497
+GU	GQ	Guam	13.354	144.704
+GW	PU	Guinea-Bissau	12.164	-14.524
+GY	GY	Guyana	5.124	-58.943
+HK	HK	Hong Kong	22.449	114.098
+HM	HM	Heard Island and McDonald Islands	-53.103	73.505
+HN	HO	Honduras	14.795	-86.888
+HR	HR	Croatia	45.806	16.372
+HT	HA	Haiti	19.264	-72.224
+HU	HU	Hungary	47.087	19.448
+ID	ID	Indonesia	-0.954	101.893
+IE	EI	Ireland	53.079	-7.799
+IL		Israel	30.911	34.848
+IM	IM	Isle of Man	54.221	-4.530
+IN	IN	India	22.687	79.358
+IO	IO	British Indian Ocean Territory	-6.191	71.348
+IQ	IZ	Iraq	33.094	43.262
+IR	IR	Iran	32.166	54.931
+IS	IC	Iceland	64.779	-18.674
+IT	IT	Italy	44.732	11.077
+JE	JE	Jersey	49.221	-2.090
+JM	JM	Jamaica	18.137	-77.319
+JO	JO	Jordan	30.805	36.376
+JP	JA	Japan	36.143	138.442
+KE	KE	Kenya	0.549	37.908
+KG	KG	Kyrgyzstan	41.669	74.533
+KH	CB	Cambodia	12.648	104.505
+KI	KR	Kiribati	1.820	-157.385
+KM	CN	Comoros	-11.728	43.318
+KN	SC	Saint Kitts and Nevis	17.337	-62.758
+KP	KN	North Korea	39.885	126.445
+KR	KS	South Korea	36.385	128.130
+KW	KU	Kuwait	29.414	47.314
+KY	CJ	Cayman Islands	19.320	-81.241
+KZ	KZ	Kazakhstan	49.054	68.686
+LA	LA	Laos	19.432	102.534
+LB	LE	Lebanon	34.133	35.993
+LC	ST	Saint Lucia	13.892	-60.980
+LI	LS	Liechtenstein	47.111	9.559
+LK	CE	Sri Lanka	7.581	80.705
+LR	LI	Liberia	6.447	-9.460
+LS	LT	Lesotho	-29.480	28.247
+LT	LH	Lithuania	55.104	24.090
+LU	LU	Luxembourg	49.734	6.078
+LV	LG	Latvia	57.067	25.459
+LY	LY	Libya	26.639	18.011
+MA	MO	Morocco	31.651	-7.187
+MC	MN	Monaco	43.740	7.398
+MD	MD	Moldova	47.435	28.488
+ME	MJ	Montenegro	42.803	19.144
+MF	RN	Saint Martin	18.081	-63.049
+MG	MA	Madagascar	-18.628	46.704
+MH	RM	Marshall Islands	7.083	171.194
+MK	MK	North Macedonia	41.558	21.556
+ML	ML	Mali	18.693	-2.038
+MM	BM	Myanmar	21.574	95.804
+MN	MG	Mongolia	45.997	104.150
+MO	MC	Macau	22.130	113.556
+MP	CQ	Northern Mariana Islands	15.188	145.734
+MR	MR	Mauritania	19.587	-9.740
+MS	MH	Montserrat	16.737	-62.188
+MT	MT	Malta	35.893	14.433
+MU	MP	Mauritius	-20.300	57.566
+MV	MV	Maldives	4.174	73.508
+MW	MI	Malawi	-13.387	33.608
+MX	MX	Mexico	23.920	-102.289
+MY	MY	Malaysia	2.529	113.837
+MZ	MZ	Mozambique	-13.943	37.838
+NA	WA	Namibia	-20.575	17.108
+NC	NC	New Caledonia	-21.065	165.084
+NE	NG	Niger	17.446	9.504
+NF	NF	Norfolk Island	-29.033	167.955
+NG	NI	Nigeria	9.440	7.503
+NI	NU	Nicaragua	12.671	-85.069
+NL	NL	Netherlands	52.422	5.611
+NO		Norway	61.357	9.680
+NP	NP	Nepal	28.298	83.640
+NR	NR	Nauru	-0.520	166.933
+NU	NE	Niue	-19.046	-169.863
+NZ	NZ	New Zealand	-39.759	172.787
+OM	MU	Oman	22.120	57.337
+PA	PM	Panama	8.722	-80.352
+PE	PE	Peru	-12.977	-72.900
+PF	FP	French Polynesia	-17.628	-149.462
+PG	PP	Papua New Guinea	-5.695	143.910
+PH	RP	Philippines	11.198	122.465
+PK	PK	Pakistan	29.328	68.546
+PL	PL	Poland	51.990	19.490
+PM	SB	Saint Pierre and Miquelon	47.040	-56.332
+PN	PC	Pitcairn Islands	-24.365	-128.318
+PR	RQ	Puerto Rico	18.235	-66.481
+PS		Palestine	32.047	35.291
+PT	PO	Portugal	39.607	-8.272
+PW	PS	Palau	7.518	134.580
+PY	PA	Paraguay	-21.675	-60.146
+QA	QA	Qatar	25.237	51.144
+RO	RO	Romania	45.733	24.973
+RS	RI	Serbia	44.190	20.788
+RU	RS	Russia	58.249	44.686
+RW	RW	Rwanda	-1.897	30.104
+SA	SA	Saudi Arabia	23.807	44.700
+SB	BP	Solomon Islands	-8.030	159.170
+SC	SE	Seychelles	-4.677	55.480
+SD	SU	Sudan	16.331	29.261
+SE	SW	Sweden	65.859	19.017
+SG	SN	Singapore	1.367	103.817
+SH	SH	Saint Helena	-15.950	-5.713
+SI	SI	Slovenia	46.061	14.915
+SK	LO	Slovakia	48.734	19.050
+SL	SL	Sierra Leone	8.617	-11.764
+SM	SM	San Marino	43.934	12.441
+SN	SG	Senegal	15.138	-14.779
+SO	SO	Somalia	3.569	45.192
+SR	NS	Suriname	4.144	-55.911
+SS		South Sudan	7.230	30.390
+ST	TP	São Tomé and Príncipe	0.971	7.021
+SV	ES	El Salvador	13.685	-88.890
+SX	NT	Sint Maarten	18.041	-63.070
+SY	SY	Syria	35.007	38.278
+SZ	WZ	Eswatini	-26.534	31.467
+TC	TK	Turks and Caicos Islands	21.817	-71.753
+TD	CD	Chad	15.143	18.645
+TF	FS	French Southern and Antarctic Lands	-49.304	69.122
+TG	TO	Togo	8.807	1.058
+TH	TH	Thailand	15.460	101.073
+TJ	TI	Tajikistan	38.200	72.587
+TL	TT	East Timor	-8.804	125.855
+TM	TX	Turkmenistan	39.855	58.677
+TN	TS	Tunisia	33.687	9.008
+TO	TN	Tonga	-21.210	-175.163
+TR	TU	Turkey	39.345	34.508
+TT	TD	Trinidad and Tobago	10.999	-60.918
+TV	TV	Tuvalu	-8.514	179.210
+TW	TW	Taiwan	23.652	120.868
+TZ	TZ	Tanzania	-6.052	34.959
+UA	UP	Ukraine	49.725	32.141
+UG	UG	Uganda	1.973	32.949
+US	US	United States of America	39.538	-97.483
+UY	UY	Uruguay	-32.961	-55.967
+UZ	UZ	Uzbekistan	41.694	64.005
+VA	VT	Vatican City	41.903	12.453
+VC	VC	Saint Vincent and the Grenadines	13.088	-61.336
+VE	VE	Venezuela	7.182	-64.599
+VG	VI	British Virgin Islands	18.427	-64.637
+VI	VQ	United States Virgin Islands	17.747	-64.779
+VN	VM	Vietnam	21.715	105.387
+VU	NH	Vanuatu	-15.372	166.909
+WF	WF	Wallis and Futuna	-14.286	-178.137
+WS	WS	Samoa	-13.639	-172.438
+XK	KV	Kosovo	42.594	20.861
+YE	YM	Yemen	15.328	45.874
+ZA	SF	South Africa	-29.709	23.666
+ZM	ZA	Zambia	-14.661	26.395
+ZW	ZI	Zimbabwe	-18.912	29.925

@@ -4,6 +4,7 @@
 //! disk, so the app can start without a connection. [`refresh`] ties the two together
 //! and enforces how often a Source may be asked.
 
+pub mod advisories;
 mod cache;
 pub mod hazards;
 pub mod import;

@@ -1,12 +1,12 @@
-//! The Layers under the Hazards Theme: earthquakes, fire detections, tropical storms
-//! and U.S. weather alerts.
+//! The Layers under the Hazards Theme: earthquakes, fire detections, tropical storms,
+//! U.S. weather alerts and Travel Advisories.
 //!
 //! Each Layer keeps to its own family of colours, so its dots can be told from the
 //! others' when several are on: earthquakes yellow to red, fire detections flame
 //! orange, storms white and aqua, alerts pink and violet.
 
 use orion_core::layer::{Theme, TimeCoverage};
-use orion_data::hazards;
+use orion_data::{advisories, hazards};
 
 use crate::feature_layer::{Class, Show, Spec};
 
@@ -96,8 +96,42 @@ pub static ALERTS: Spec = Spec {
     ring_km: 0.0,
 };
 
+/// What the governments of the United States, the United Kingdom and Canada say
+/// about travelling to each country: one mark a country, coloured by the United
+/// States' level.
+pub static TRAVEL_ADVISORIES: Spec = Spec {
+    name: "Travel advisories",
+    theme: Theme::Hazards,
+    listing: advisories::TRAVEL_ADVISORIES,
+    classes: &[
+        Class::new("Level 1: usual precautions", [129, 199, 132]),
+        Class::new("Level 2: increased caution", [255, 238, 88]),
+        Class::new("Level 3: reconsider travel", [255, 152, 0]),
+        Class::new("Level 4: do not travel", [229, 57, 53]),
+        Class::new("No U.S. level", [158, 158, 158]),
+    ],
+    coverage: TimeCoverage::PresentOnly,
+    show: Show::Always,
+    // The graver the advice, the larger the mark.
+    dot_scale: |advisory| 2.2 + 0.5 * advisory.size,
+    note: "One mark for each country, coloured by the level the United States sets, with \
+           the United Kingdom's and Canada's advice beside it. An advisory speaks for a \
+           whole country, and names the parts it means in its own words: read the page.",
+    attribution: "Travel advisories: U.S. Department of State; UK FCDO, Open Government \
+                  Licence v3.0; Global Affairs Canada, Open Government Licence - Canada",
+    cluster: false,
+    routes: false,
+    ring_km: 0.0,
+};
+
 /// Every Layer in this module, in the order they are listed.
-pub static ALL: [&Spec; 4] = [&EARTHQUAKES, &FIRE_DETECTIONS, &STORMS, &ALERTS];
+pub static ALL: [&Spec; 5] = [
+    &EARTHQUAKES,
+    &FIRE_DETECTIONS,
+    &STORMS,
+    &ALERTS,
+    &TRAVEL_ADVISORIES,
+];
 
 #[cfg(test)]
 mod tests {
@@ -112,11 +146,42 @@ mod tests {
                 "Earthquakes",
                 "Fire detections",
                 "Tropical storms",
-                "U.S. weather alerts"
+                "U.S. weather alerts",
+                "Travel advisories"
             ]
         );
         for spec in ALL {
             assert_eq!(spec.theme, Theme::Hazards, "{}", spec.name);
+        }
+    }
+
+    #[test]
+    fn a_travel_advisory_is_coloured_by_the_united_states_level() {
+        let labels: Vec<&str> = TRAVEL_ADVISORIES
+            .classes
+            .iter()
+            .map(|class| class.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Level 1: usual precautions",
+                "Level 2: increased caution",
+                "Level 3: reconsider travel",
+                "Level 4: do not travel",
+                "No U.S. level"
+            ]
+        );
+        // The classes are in the order the file's reader numbers them.
+        assert_eq!(advisories::advisory_class::LEVEL_4, 3);
+        assert_eq!(advisories::advisory_class::NO_US_LEVEL, 4);
+        // Each government asks to be credited, two of them by licence.
+        for credit in [
+            "Department of State",
+            "Open Government Licence v3.0",
+            "Canada",
+        ] {
+            assert!(TRAVEL_ADVISORIES.attribution.contains(credit), "{credit}");
         }
     }
 }
