@@ -1,4 +1,4 @@
-// Tracked Objects: one fixed-size dot per object, hidden when Earth is in the way.
+// Features drawn as dots of a fixed size on screen, hidden when Earth is in the way.
 // Lengths are in Earth radii in the Earth-fixed frame, so Earth is a unit sphere at the origin.
 
 struct Uniforms {
@@ -17,14 +17,14 @@ struct VertexOutput {
     // Position within the dot's square, from -1 to 1 on each axis.
     @location(0) offset: vec2<f32>,
     @location(1) color: vec4<f32>,
-    // 1 for the selected object, which is drawn as a ring around a dot.
+    // 1 for the selected Feature, which is drawn as a ring around a dot.
     @location(2) @interpolate(flat) selected: u32,
 }
 
-// Bit flags above the kind. These must match the constants in objects.rs.
-const SELECTED: u32 = 256u;
-const HOVERED: u32 = 512u;
-const STALE: u32 = 1024u;
+// Bit flags for how a dot is marked. These must match the constants in objects.rs.
+const SELECTED: u32 = 1u;
+const HOVERED: u32 = 2u;
+const STALE: u32 = 4u;
 
 // True if the straight line from the camera to `point` passes through Earth first.
 // The camera is always outside the sphere.
@@ -45,32 +45,26 @@ fn hidden_by_earth(camera: vec3<f32>, point: vec3<f32>) -> bool {
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     @location(0) position: vec3<f32>,
-    @location(1) kind_and_marks: u32,
+    @location(1) marks: u32,
+    // Linear colour with alpha, chosen by the Layer the dot belongs to.
+    @location(2) color: vec4<f32>,
 ) -> VertexOutput {
-    let kind = kind_and_marks & 255u;
-    // Linear colours, indexed by kind: Satellite, Rocket Body, Debris.
-    var colors = array<vec4<f32>, 3>(
-        vec4<f32>(0.35, 0.75, 1.0, 1.0),
-        vec4<f32>(1.0, 0.5, 0.12, 1.0),
-        vec4<f32>(0.75, 0.2, 0.2, 0.75),
-    );
-
     var out: VertexOutput;
     // The four corners of a triangle strip: (-1,-1), (1,-1), (-1,1), (1,1).
     out.offset = vec2<f32>(f32(vertex_index & 1u), f32(vertex_index >> 1u)) * 2.0 - 1.0;
-    out.color = colors[min(kind, 2u)];
+    out.color = color;
     out.selected = 0u;
 
     var radius = uniforms.dot_radius;
-    if (kind_and_marks & STALE) != 0u {
+    if (marks & STALE) != 0u {
         // The Position is unreliable, so the dot is faint.
         out.color.a *= 0.3;
     }
-    if (kind_and_marks & HOVERED) != 0u {
+    if (marks & HOVERED) != 0u {
         radius *= 1.8;
         out.color = vec4<f32>(mix(out.color.rgb, vec3<f32>(1.0), 0.5), 1.0);
     }
-    if (kind_and_marks & SELECTED) != 0u {
+    if (marks & SELECTED) != 0u {
         radius *= 4.0;
         out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
         out.selected = 1u;

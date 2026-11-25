@@ -73,6 +73,15 @@ pub struct Now {
     pub speed_km_s: f64,
 }
 
+/// The colour of a Tracked Object's dot, as linear colour with alpha from 0 to 255.
+fn kind_color(kind: ObjectKind) -> [u8; 4] {
+    match kind {
+        ObjectKind::Satellite => [89, 191, 255, 255],
+        ObjectKind::RocketBody => [255, 128, 31, 255],
+        ObjectKind::Debris => [191, 51, 51, 191],
+    }
+}
+
 fn to_earth_radii(position_km: [f64; 3]) -> Vec3 {
     (DVec3::from_array(position_km) / EARTH_EQUATORIAL_RADIUS_KM).as_vec3()
 }
@@ -200,7 +209,7 @@ impl Tracked {
                     hovered: highlight.hovered == Some(index),
                     stale: object.element_set.age_days(at) > STALE_AFTER_DAYS,
                 };
-                Instance::new(to_earth_radii(position_km), object.kind, marks)
+                Instance::new(to_earth_radii(position_km), kind_color(object.kind), marks)
             })
             .collect_into_vec(&mut self.instances);
         self.last_propagation = started.elapsed();
@@ -466,7 +475,11 @@ mod tests {
         tracked.propagate(later, Highlight::default());
         let stale = tracked.instances()[index];
         assert!(!stale.is_hidden());
-        let fresh = Instance::new(stale.position(), ObjectKind::Satellite, Marks::default());
+        let fresh = Instance::new(
+            stale.position(),
+            kind_color(ObjectKind::Satellite),
+            Marks::default(),
+        );
         assert_ne!(stale, fresh);
     }
 

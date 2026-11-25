@@ -4,15 +4,15 @@ use orion_core::sun::SurfacePoint;
 
 use std::time::Duration;
 
-use orion_core::catalogue::ObjectKind;
 use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
 use orion_core::filter::{Filter, Group};
+use orion_core::layer::FeatureCard;
 use orion_core::time::JulianDate;
 
 use crate::camera::ViewFrame;
 use crate::feed::{Origin, Refresh, Status};
+use crate::layer::Toggle;
 use crate::renderer::GpuInfo;
-use crate::tracked::Details;
 use crate::tracked::Summary;
 
 /// Everything the diagnostics panel reports for one frame.
@@ -400,119 +400,48 @@ pub struct SelectionActions {
     pub clear: bool,
 }
 
-/// Draws the information panel for the selected Tracked Object.
+/// Draws the information panel for the selected Feature: its card, then any switches
+/// its Layer offers, which are edited in place.
 pub fn draw_selected(
     ctx: &egui::Context,
-    details: &Details,
-    show_ground_track: &mut bool,
+    card: &FeatureCard,
+    toggles: &mut [Toggle],
 ) -> SelectionActions {
     let mut actions = SelectionActions::default();
-    egui::Window::new(&details.name)
+    egui::Window::new(&card.title)
         // The title changes with the selection; a fixed id keeps it one window.
         .id(egui::Id::unique("selected"))
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
         .resizable(false)
         .show(ctx, |ui| {
-            let row = |ui: &mut egui::Ui, label: &str, value: String| {
-                ui.label(label);
-                ui.label(value);
-                ui.end_row();
-            };
-
-            egui::Grid::new("identity")
-                .num_columns(2)
-                // Owner and launch site names can be long; wrap them instead of
-                // stretching the panel across the globe.
-                .max_col_width(240.0)
-                .show(ui, |ui| {
-                    row(ui, "Catalogue number", details.catalogue_number.to_string());
-                    row(ui, "Designator", details.designator.clone());
-                    row(ui, "Kind", kind_name(details.kind).to_owned());
-                    match &details.record {
-                        Some(record) => {
-                            row(ui, "Owner", record.owner.clone());
-                            row(ui, "Launched", record.launch_date.clone());
-                            row(ui, "Launch site", record.launch_site.clone());
+            for (number, section) in card.sections.iter().enumerate() {
+                if number > 0 {
+                    ui.separator();
+                }
+                egui::Grid::new(("card section", number))
+                    .num_columns(2)
+                    // Some values are long; wrap them instead of stretching the
+                    // panel across the globe.
+                    .max_col_width(240.0)
+                    .show(ui, |ui| {
+                        for row in section {
+                            ui.label(&row.label);
+                            ui.label(&row.value);
+                            ui.end_row();
                         }
-                        None => row(ui, "Owner and launch", "Not yet on record".to_owned()),
-                    }
-                });
-
-            ui.separator();
-            match details.now {
-                Some(now) => {
-                    egui::Grid::new("now").num_columns(2).show(ui, |ui| {
-                        row(ui, "Latitude", format_latitude(now.over.latitude_deg));
-                        row(ui, "Longitude", format_longitude(now.over.longitude_deg));
-                        row(ui, "Altitude", format!("{:.0} km", now.over.altitude_km));
-                        row(ui, "Speed", format!("{:.2} km/s", now.speed_km_s));
                     });
-                }
-                None => {
-                    ui.label("No Position can be computed for this moment.");
-                }
+            }
+            for notice in &card.notices {
+                ui.colored_label(egui::Color32::from_rgb(255, 190, 90), notice);
             }
 
             ui.separator();
-            egui::Grid::new("orbit").num_columns(2).show(ui, |ui| {
-                row(ui, "Period", format!("{:.1} min", details.period_minutes));
-                row(
-                    ui,
-                    "Inclination",
-                    format!("{:.1}°", details.inclination_deg),
-                );
-                row(
-                    ui,
-                    "Highest point",
-                    format!("{:.0} km", details.apogee_altitude_km),
-                );
-                row(
-                    ui,
-                    "Lowest point",
-                    format!("{:.0} km", details.perigee_altitude_km),
-                );
-                row(ui, "Eccentricity", format!("{:.4}", details.eccentricity));
-            });
-
-            ui.separator();
-            egui::Grid::new("element set")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    let epoch = details.epoch;
-                    row(
-                        ui,
-                        "Epoch",
-                        format!(
-                            "{:04}-{:02}-{:02} {:02}:{:02} UTC",
-                            epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute
-                        ),
-                    );
-                    row(
-                        ui,
-                        "Element Age",
-                        format!("{:.1} days", details.element_age_days),
-                    );
-                });
-            if details.stale {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 190, 90),
-                    "This Element Set is old. The Position may be far off.",
-                );
+            for toggle in toggles.iter_mut() {
+                ui.checkbox(&mut toggle.on, toggle.label);
             }
-
-            ui.separator();
-            ui.checkbox(show_ground_track, "Show Ground Track");
             actions.clear = ui.button("Clear selection").clicked();
         });
     actions
-}
-
-fn kind_name(kind: ObjectKind) -> &'static str {
-    match kind {
-        ObjectKind::Satellite => "Satellite",
-        ObjectKind::RocketBody => "Rocket Body",
-        ObjectKind::Debris => "Debris",
-    }
 }
 
 /// Draws a name next to each given point on screen, in logical points.
@@ -602,12 +531,12 @@ fn format_point(point: SurfacePoint) -> String {
     )
 }
 
-fn format_latitude(degrees: f64) -> String {
+pub fn format_latitude(degrees: f64) -> String {
     let hemisphere = if degrees >= 0.0 { 'N' } else { 'S' };
     format!("{:.1}° {hemisphere}", degrees.abs())
 }
 
-fn format_longitude(degrees: f64) -> String {
+pub fn format_longitude(degrees: f64) -> String {
     let hemisphere = if degrees >= 0.0 { 'E' } else { 'W' };
     format!("{:.1}° {hemisphere}", degrees.abs())
 }

@@ -65,8 +65,6 @@ fn hidden_by_earth(camera: Vec3, point: Vec3) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use orion_core::catalogue::ObjectKind;
-
     use super::*;
     use crate::camera::OrbitCamera;
     use crate::objects::Marks;
@@ -82,7 +80,7 @@ mod tests {
     }
 
     fn dot(position: Vec3) -> Instance {
-        Instance::new(position, ObjectKind::Satellite, Marks::default())
+        Instance::new(position, [255; 4], Marks::default())
     }
 
     #[test]

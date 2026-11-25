@@ -17,6 +17,7 @@ pub mod clock;
 pub mod codes;
 pub mod filter;
 pub mod frames;
+pub mod layer;
 pub mod sun;
 pub mod time;
 

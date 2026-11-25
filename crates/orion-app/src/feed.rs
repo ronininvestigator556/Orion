@@ -278,6 +278,34 @@ impl Feed {
     }
 }
 
+/// Stand-ins for tests elsewhere in the app.
+#[cfg(test)]
+pub mod testing {
+    use orion_core::filter::Group;
+    use orion_data::{ElementSetFiles, FetchError, Source};
+
+    /// A Source that cannot be reached, for tests that only need the Snapshot.
+    pub struct Offline;
+
+    impl Source for Offline {
+        fn name(&self) -> &'static str {
+            "offline"
+        }
+
+        fn fetch(&self) -> Result<ElementSetFiles, FetchError> {
+            Err(FetchError::Network("offline".to_owned()))
+        }
+
+        fn fetch_catalogue(&self) -> Result<String, FetchError> {
+            Err(FetchError::Network("offline".to_owned()))
+        }
+
+        fn fetch_group(&self, _group: Group) -> Result<String, FetchError> {
+            Err(FetchError::Network("offline".to_owned()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,21 +1,22 @@
-//! Tracked Objects drawn as fixed-size dots.
+//! Features drawn as fixed-size dots.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use orion_core::catalogue::ObjectKind;
 
 /// Radius of a dot in logical points; multiplied by the display's scale factor for pixels.
 const DOT_RADIUS_POINTS: f32 = 1.5;
 
 /// One dot. The order of instances is the caller's, so an instance's index can identify
-/// the Tracked Object it stands for.
+/// the Feature it stands for.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Instance {
     /// Position in Earth radii in the Earth-fixed frame.
     position: [f32; 3],
-    /// The kind in the low byte, with the `Marks` as bit flags above it.
-    kind_and_marks: u32,
+    /// The `Marks`, as bit flags.
+    marks: u32,
+    /// Linear colour with alpha, each from 0 to 255.
+    color: [u8; 4],
 }
 
 /// Ways a dot can be made to stand out, or fade.
@@ -23,37 +24,32 @@ pub struct Instance {
 pub struct Marks {
     pub selected: bool,
     pub hovered: bool,
-    /// The Element Set is too old for the Position to be trusted.
+    /// The data behind the dot is too old for its position to be trusted.
     pub stale: bool,
 }
 
 // These must match the constants in the shader.
-const SELECTED: u32 = 1 << 8;
-const HOVERED: u32 = 1 << 9;
-const STALE: u32 = 1 << 10;
+const SELECTED: u32 = 1;
+const HOVERED: u32 = 2;
+const STALE: u32 = 4;
 
 impl Instance {
     /// An instance that draws nothing. It sits at Earth's centre, where the shader's
     /// "is Earth in the way" test always hides it.
     pub const HIDDEN: Self = Self {
         position: [0.0; 3],
-        kind_and_marks: u32::MAX,
+        marks: u32::MAX,
+        color: [0; 4],
     };
 
-    pub fn new(position: Vec3, kind: ObjectKind, marks: Marks) -> Self {
-        // Must match the order of the colour table in the shader.
-        let kind = match kind {
-            ObjectKind::Satellite => 0,
-            ObjectKind::RocketBody => 1,
-            ObjectKind::Debris => 2,
-        };
+    pub fn new(position: Vec3, color: [u8; 4], marks: Marks) -> Self {
         let flag = |set: bool, bit: u32| if set { bit } else { 0 };
         Self {
             position: position.to_array(),
-            kind_and_marks: kind
-                | flag(marks.selected, SELECTED)
+            marks: flag(marks.selected, SELECTED)
                 | flag(marks.hovered, HOVERED)
                 | flag(marks.stale, STALE),
+            color,
         }
     }
 
@@ -145,7 +141,7 @@ impl Objects {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: size_of::<Instance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint32, 2 => Unorm8x4],
                 })],
             },
             primitive: wgpu::PrimitiveState {

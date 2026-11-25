@@ -6,8 +6,10 @@
 mod camera;
 mod feed;
 mod globe;
+mod layer;
 mod lines;
 mod objects;
+mod orbit_layer;
 mod picking;
 mod renderer;
 mod stars;
@@ -31,11 +33,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use camera::{CameraRig, ViewFrame};
-use feed::Feed;
+use layer::{FeatureRef, Layer, Layers};
 use lines::Segment;
+use orbit_layer::OrbitLayer;
 use picking::PickView;
 use renderer::{Renderer, Scene};
-use tracked::{Highlight, Tracked};
 
 /// Trackpads report scrolling in pixels; this many count as one zoom step.
 const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
@@ -43,16 +45,13 @@ const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
 const PICK_REACH_POINTS: f32 = 8.0;
 /// A press and release less than this many logical points apart is a click, not a drag.
 const CLICK_SLOP_POINTS: f64 = 4.0;
-/// Linear colours with alpha.
-const ORBIT_PATH_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
-const GROUND_TRACK_COLOR: [f32; 4] = [1.0, 0.75, 0.15, 0.9];
 
-/// The Tracked Object the user has picked out.
+/// The Feature the user has picked out.
 #[derive(Clone, Copy, Debug)]
 struct Selection {
-    /// Identifies the object across refreshes, when its index can change.
-    catalogue_number: u32,
-    index: usize,
+    feature: FeatureRef,
+    /// Identifies the Feature across refreshes of its Layer, when its index can change.
+    key: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -136,14 +135,12 @@ struct Running {
     rig: CameraRig,
     /// How far, in radians, Earth has turned against the stars at the moment on show.
     sidereal_angle: f32,
-    tracked: Tracked,
-    feed: Feed,
+    layers: Layers,
     clock: SimulationClock,
     clock_panel: ui::ClockPanel,
     selected: Option<Selection>,
-    /// Index of the Tracked Object under the cursor.
-    hovered: Option<usize>,
-    show_ground_track: bool,
+    /// The Feature under the cursor.
+    hovered: Option<FeatureRef>,
     /// The filter as the Find panel shows it.
     filter: Filter,
     /// Line segments for the current frame, kept to reuse the allocation.
@@ -177,23 +174,27 @@ impl Running {
         if cache.is_none() {
             log::warn!("no cache folder is available; Element Sets will not be fetched");
         }
-        let (feed, objects, records, groups) =
-            Feed::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
-
-        let mut tracked = Tracked::new(objects, records, groups);
+        let mut orbit = OrbitLayer::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
+        orbit.set_show_ground_track(options.ground_track);
         let filter = Filter {
             text: options.find.unwrap_or_default(),
             ..Filter::default()
         };
-        tracked.set_filter(filter.clone());
+        orbit.tracked_mut().set_filter(filter.clone());
+        let layers = Layers::new(orbit);
+
         let selected = options.select.and_then(|catalogue_number| {
-            let index = tracked.index_of(catalogue_number);
+            let key = u64::from(catalogue_number);
+            let index = layers.orbit.index_of(key);
             if index.is_none() {
                 log::warn!("no Tracked Object has catalogue number {catalogue_number}");
             }
             Some(Selection {
-                catalogue_number,
-                index: index?,
+                feature: FeatureRef {
+                    layer: 0,
+                    index: index?,
+                },
+                key,
             })
         });
 
@@ -209,13 +210,11 @@ impl Running {
             renderer,
             rig,
             sidereal_angle,
-            tracked,
-            feed,
+            layers,
             clock: SimulationClock::new(julian_date_now()),
             clock_panel: ui::ClockPanel::default(),
             selected,
             hovered: None,
-            show_ground_track: options.ground_track,
             filter,
             segments: Vec::new(),
             dragging: false,
@@ -238,14 +237,19 @@ impl Running {
         let now = self.clock.advance(real_now, elapsed_ms as f64 / 1000.0);
         let previous_sidereal_angle = self.sidereal_angle;
         self.sidereal_angle = now.greenwich_sidereal_angle() as f32;
-        if let Some(refreshed) = self.feed.poll() {
-            self.tracked
-                .replace(refreshed.objects, refreshed.records, refreshed.groups);
-            // Indexes belong to the old set; find the selected object again by number.
+        if self.layers.orbit.poll() {
+            // Indexes belong to the old set; find the selected Feature again by its key.
             self.hovered = None;
             self.selected = self.selected.and_then(|selection| {
-                let index = self.tracked.index_of(selection.catalogue_number)?;
-                Some(Selection { index, ..selection })
+                let layer = self.layers.get(selection.feature.layer)?;
+                let index = layer.index_of(selection.key)?;
+                Some(Selection {
+                    feature: FeatureRef {
+                        index,
+                        ..selection.feature
+                    },
+                    ..selection
+                })
             });
         }
 
@@ -260,82 +264,68 @@ impl Running {
             _ => None,
         };
 
-        let selected = self.selected.map(|selection| selection.index);
-        self.tracked.propagate(
-            now,
-            Highlight {
-                selected,
-                hovered: self.hovered,
-            },
-        );
+        let selected = self.selected.map(|selection| selection.feature);
+        self.layers.update(now, real_now, selected, self.hovered);
 
         // Follow Mode needs something to follow, and moves the camera before it is used.
         if selected.is_none() {
             self.rig.set_following(false);
         }
         let followed = selected
-            .and_then(|index| self.tracked.instances().get(index))
-            .filter(|instance| !instance.is_hidden())
-            .map(|instance| instance.position());
+            .and_then(|feature| self.layers.dot(feature))
+            .filter(|dot| !dot.is_hidden())
+            .map(|dot| dot.position());
         self.rig.follow(followed, self.sidereal_angle);
         let pick_view = self.pick_view();
 
         self.segments.clear();
-        if let Some(index) = selected {
-            let orbit_path = self.tracked.orbit_path(index, now);
-            lines::push_polyline(&mut self.segments, &orbit_path, ORBIT_PATH_COLOR);
-            if self.show_ground_track {
-                let ground_track = self.tracked.ground_track(index, now);
-                lines::push_polyline(&mut self.segments, &ground_track, GROUND_TRACK_COLOR);
-            }
-        }
+        self.layers.lines(selected, now, &mut self.segments);
 
         let scene = Scene {
             view_projection: pick_view.view_projection,
             camera_position: pick_view.camera_position,
             sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
-            objects: self.tracked.instances(),
+            objects: self.layers.dots(),
             lines: &self.segments,
             sidereal_angle: self.sidereal_angle,
         };
 
-        // Name the selected and hovered objects next to their dots.
+        // Name the selected and hovered Features next to their dots.
         let scale_factor = self.window.scale_factor() as f32;
         let mut labels = Vec::new();
-        for index in [
+        for feature in [
             selected,
             self.hovered.filter(|hovered| Some(*hovered) != selected),
         ]
         .into_iter()
         .flatten()
         {
-            let (Some(object), Some(instance)) = (
-                self.tracked.object(index),
-                self.tracked.instances().get(index),
-            ) else {
+            let (Some(name), Some(dot)) =
+                (self.layers.feature_name(feature), self.layers.dot(feature))
+            else {
                 continue;
             };
-            if let Some(pixels) = pick_view.project(instance.position()) {
+            if let Some(pixels) = pick_view.project(dot.position()) {
                 let points = pixels / scale_factor;
-                labels.push((egui::pos2(points.x, points.y), object.name.clone()));
+                labels.push((egui::pos2(points.x, points.y), name.to_owned()));
             }
         }
 
+        let tracked = self.layers.orbit.tracked();
         let diagnostics = ui::Diagnostics {
             frame_ms: self.frame_ms,
             subsolar: subsolar_point(now),
-            tracked: self.tracked.summary(now),
+            tracked: tracked.summary(now),
         };
         let found = ui::Found {
-            shown: self.tracked.matches().len(),
-            total: self.tracked.len(),
-            results: self
-                .tracked
+            shown: tracked.matches().len(),
+            total: tracked.len(),
+            results: tracked
                 .matches()
                 .iter()
                 .take(ui::MAX_RESULTS)
                 .filter_map(|&index| {
-                    let object = self.tracked.object(index)?;
+                    let object = tracked.object(index)?;
                     Some((
                         index,
                         format!("{}  ({})", object.name, object.catalogue_number),
@@ -345,10 +335,13 @@ impl Running {
         };
         let mut filter = self.filter.clone();
         let mut found_pick = None;
-        let details = selected.and_then(|index| self.tracked.details(index, now));
-        let feed_status = self.feed.status(SystemTime::now());
+        let card = selected.and_then(|feature| self.layers.card(feature, now));
+        let mut toggles = selected
+            .and_then(|feature| self.layers.get(feature.layer))
+            .map(|layer| layer.toggles())
+            .unwrap_or_default();
+        let feed_status = self.layers.orbit.feed_status(SystemTime::now());
         let mut refresh_requested = false;
-        let mut show_ground_track = self.show_ground_track;
         let mut selection_actions = ui::SelectionActions::default();
         let mut view_choices = ui::ViewChoices {
             frame: self.rig.frame(),
@@ -366,18 +359,20 @@ impl Running {
             ui::draw(ctx, gpu, &diagnostics);
             refresh_requested |= ui::draw_element_sets(ctx, &feed_status);
             clock_action = ui::draw_clock(ctx, &clock, real_now, clock_panel).or(clock_action);
-            if let Some(details) = &details {
-                selection_actions = ui::draw_selected(ctx, details, &mut show_ground_track);
+            if let Some(card) = &card {
+                selection_actions = ui::draw_selected(ctx, card, &mut toggles);
             }
         });
-        self.show_ground_track = show_ground_track;
+        if let Some(layer) = selected.and_then(|feature| self.layers.get_mut(feature.layer)) {
+            layer.set_toggles(&toggles);
+        }
         if filter != self.filter {
             self.filter = filter.clone();
-            self.tracked.set_filter(filter);
+            self.layers.orbit.tracked_mut().set_filter(filter);
             // Indexes still mean the same objects; only what is on show has changed.
         }
         if let Some(index) = found_pick {
-            self.select_and_face(index);
+            self.select_and_face(FeatureRef { layer: 0, index });
         }
         match clock_action {
             Some(ui::ClockAction::SetPaused(paused)) => self.clock.set_paused(paused),
@@ -394,7 +389,7 @@ impl Running {
             self.selected = None;
         }
         if refresh_requested {
-            self.feed.request_refresh(SystemTime::now());
+            self.layers.orbit.request_refresh(SystemTime::now());
         }
 
         // Positions change continuously, so draw every frame; vsync paces the loop.
@@ -417,42 +412,44 @@ impl Running {
         }
     }
 
-    /// The index of the Tracked Object whose dot is under the cursor, if any.
-    fn pick(&self, view: &PickView, cursor: PhysicalPosition<f64>) -> Option<usize> {
-        view.pick(
-            self.tracked.instances(),
+    /// The Feature whose dot is under the cursor, if any.
+    fn pick(&self, view: &PickView, cursor: PhysicalPosition<f64>) -> Option<FeatureRef> {
+        let dot = view.pick(
+            self.layers.dots(),
             Vec2::new(cursor.x as f32, cursor.y as f32),
             PICK_REACH_POINTS * self.window.scale_factor() as f32,
-        )
+        )?;
+        self.layers.feature_at(dot)
     }
 
-    /// Selects a Tracked Object by index and turns the globe to bring it into view.
-    fn select_and_face(&mut self, index: usize) {
-        let Some(catalogue_number) = self
-            .tracked
-            .object(index)
-            .map(|object| object.catalogue_number)
-        else {
-            return;
-        };
-        self.selected = Some(Selection {
-            catalogue_number,
-            index,
-        });
-        let instance = self.tracked.instances().get(index);
-        if let Some(instance) = instance.filter(|instance| !instance.is_hidden()) {
-            self.rig.face(instance.position(), self.sidereal_angle);
+    /// Selects a Feature, remembering its key so the selection survives a refresh.
+    fn select(&mut self, feature: FeatureRef) {
+        let key = self
+            .layers
+            .get(feature.layer)
+            .and_then(|layer| layer.stable_key(feature.index));
+        self.selected = key.map(|key| Selection { feature, key });
+    }
+
+    /// Selects a Feature and turns the globe to bring it into view.
+    fn select_and_face(&mut self, feature: FeatureRef) {
+        self.select(feature);
+        let position = self
+            .layers
+            .dot(feature)
+            .filter(|dot| !dot.is_hidden())
+            .map(|dot| dot.position());
+        if let Some(position) = position {
+            self.rig.face(position, self.sidereal_angle);
         }
     }
 
-    /// Selects the Tracked Object under the cursor, or clears the selection if there is none.
+    /// Selects the Feature under the cursor, or clears the selection if there is none.
     fn click(&mut self, cursor: PhysicalPosition<f64>) {
-        self.selected = self.pick(&self.pick_view(), cursor).and_then(|index| {
-            Some(Selection {
-                catalogue_number: self.tracked.object(index)?.catalogue_number,
-                index,
-            })
-        });
+        match self.pick(&self.pick_view(), cursor) {
+            Some(feature) => self.select(feature),
+            None => self.selected = None,
+        }
     }
 
     /// Applies a mouse or trackpad event to the camera and the selection.
