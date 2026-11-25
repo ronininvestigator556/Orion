@@ -1,6 +1,6 @@
 # Orion
 
-A desktop app that shows publicly available information about the world on a 3D globe, in Layers that can be switched on and off: what is in orbit, and places, traffic and weather on and above the surface. It shows places and vehicles as their sources publish them, and is not a tool for following individuals.
+A desktop app that shows publicly available information about the world on a 3D globe, in Layers that can be switched on and off: what is in orbit, and places, traffic, weather and events on and above the surface. It shows places, vehicles and events as their Sources publish them, and is not a tool for following individuals.
 
 ## Language
 
@@ -11,11 +11,11 @@ One kind of thing from one kind of source, shown or hidden as a whole, with its 
 _Avoid_: Overlay, dataset, category
 
 **Theme**:
-A heading under which related Layers are listed: Orbit, Places, Energy, Traffic, Weather or Imported.
+A heading under which related Layers are listed: Orbit, Places, Energy, Roads, Traffic, Weather, Hazards, Unrest or Imported. Traffic is the Theme of vehicles shown moving, such as aircraft and ships; what is happening on the roads themselves belongs to Roads. Weather is the Theme of pictures of the sky and sea; an earthquake, a storm or an official warning belongs to Hazards.
 _Avoid_: Group, category, folder, section
 
 **Feature**:
-One thing shown on a Layer: a fixed place such as a mine, a route such as a pipeline, an area such as an oil field, or something moving such as a ship. A Tracked Object is a Feature of the orbit Layer.
+One thing shown on a Layer: a fixed place such as a mine, a route such as a pipeline, an area such as an oil field, something moving such as a ship, or an event such as an earthquake or an Unrest Report. A Tracked Object is a Feature of the orbit Layer.
 _Avoid_: Entity, item, marker, point of interest
 
 **Base Map**:
@@ -38,6 +38,18 @@ _Avoid_: Feed, endpoint, API
 A hot spot on the ground seen by a satellite's instrument, about a kilometre across. It may be a wildfire, a planned burn, a gas flare or a volcano, so it is never called a fire outright.
 _Avoid_: Wildfire, fire, hotspot
 
+**Unrest Report**:
+A protest, a protest with violence or a strike as a Source reported it, or announced it for a day ahead, at a place and on a day. It is a report, not an observation: it may be late, placed no more exactly than a town, or wrong, and it never says where a crowd is at this moment.
+_Avoid_: Protest or riot (as the general word), civil emergency, incident, demonstration
+
+**Road Incident**:
+Something getting in the way on a road, as the road's authority published it: an accident, a closure or roadworks.
+_Avoid_: Traffic, traffic event, hazard, alert
+
+**Road Congestion**:
+How slowly vehicles are moving along a stretch of road compared with when it is clear.
+_Avoid_: Traffic, traffic flow, jam
+
 **Extract**:
 A file of Features for one Layer, prepared ahead of time by the project from a Source and downloaded by the app.
 _Avoid_: Dump, export, dataset
@@ -47,7 +59,7 @@ A Layer made from a file of places that the user opens, as opposed to one that c
 _Avoid_: Custom layer, user layer, overlay
 
 **Time Coverage**:
-The moments a Layer is able to show: any moment, only the present, or the present and some of the past.
+The moments a Layer is able to show: any moment, only the present, the present and some of the past, or those and what has been announced for the days ahead.
 _Avoid_: Time range, availability, history
 
 ### What is in orbit
