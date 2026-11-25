@@ -1,0 +1,9 @@
+[package]
+name = "orion-core"
+description = "Headless orbital maths for Orion: propagation, time and coordinate conversion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]

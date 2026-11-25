@@ -1,0 +1,24 @@
+[package]
+name = "orion-app"
+description = "Orion desktop app: a 3D globe showing every publicly catalogued object in Earth orbit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "orion"
+path = "src/main.rs"
+
+[dependencies]
+orion-core.workspace = true
+
+anyhow.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+env_logger.workspace = true
+log.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+winit.workspace = true
