@@ -4,9 +4,10 @@
 //! Such a Layer has no Features. It follows the Simulation Clock: move the clock back
 //! and the picture is the one from then, as far back as the Source keeps them.
 //!
-//! A picture made every ten minutes is published when its Source gets to it: an hour
-//! later or two, not always in order, and now and then never. So the Layer does not
-//! reckon which picture is the newest. It asks.
+//! Most pictures are published when their Source gets to it: one made every ten
+//! minutes an hour later or two, not always in order and now and then never; a day's
+//! rain a day later, or two. So for those the Layer does not reckon which picture is
+//! the newest. It asks.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use orion_core::layer::{FeatureCard, Theme, TimeCoverage};
 use orion_core::time::JulianDate;
 use orion_data::FetchError;
-use orion_data::tiles::{self, TileLayer, picture_time};
+use orion_data::tiles::{self, TileLayer, picture_day, picture_time};
 
 use crate::basemap::Picture;
 use crate::layer::{Highlight, Layer, LayerStatus};
@@ -34,24 +35,57 @@ const RETRY: Duration = Duration::from_secs(60);
 /// How long after finding only an older picture than the one wanted the Source is
 /// asked whether the newer one has been published since.
 const RECHECK: Duration = Duration::from_secs(180);
+/// The same for a picture made once a day, which is in no such hurry.
+const DAILY_RECHECK: Duration = Duration::from_secs(30 * 60);
 /// How close to the present the moment wanted must be for a newer picture to be
 /// worth asking after again, in days. Further back, what is held will not change.
 const RECENT_DAYS: f64 = 0.25;
+/// The same for a picture made once a day, which may be published days later.
+const DAILY_RECENT_DAYS: f64 = 4.0;
 
 /// How often a picture is made, and how its latest one is known.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Step {
-    /// One a day, published this many days later.
+    /// One a day, served from its first hours and filled in as the day goes on: the
+    /// latest whole one is from this many days back.
     Daily { lag_days: f64 },
+    /// One a day, published whole when the Source gets to it: the Source is asked
+    /// which it holds.
+    DailyWhenHeld,
     /// One every ten minutes, published when the Source gets to it: the Source is
     /// asked which it holds.
     TenMinutes,
 }
 
+impl Step {
+    /// Whether the newest picture is found by asking the Source which it holds.
+    fn is_asked(self) -> bool {
+        !matches!(self, Self::Daily { .. })
+    }
+
+    /// How the Source expects a moment of this picture written.
+    pub fn written(self) -> fn(JulianDate) -> String {
+        match self {
+            Self::Daily { .. } | Self::DailyWhenHeld => picture_day,
+            Self::TenMinutes => picture_time,
+        }
+    }
+
+    /// How long after finding only an older picture the Source is asked again, and
+    /// how close to the present, in days, the moment wanted must be for that.
+    fn recheck(self) -> (Duration, f64) {
+        match self {
+            Self::Daily { .. } | Self::DailyWhenHeld => (DAILY_RECHECK, DAILY_RECENT_DAYS),
+            Self::TenMinutes => (RECHECK, RECENT_DAYS),
+        }
+    }
+}
+
 /// Finds the newest picture made no later than a moment that its Source really
 /// serves; `Ok(None)` if it holds none near then. Called off the main thread.
-pub type FindPicture =
-    Arc<dyn Fn(&TileLayer, JulianDate) -> Result<Option<JulianDate>, FetchError> + Send + Sync>;
+pub type FindPicture = Arc<
+    dyn Fn(&TileLayer, Step, JulianDate) -> Result<Option<JulianDate>, FetchError> + Send + Sync,
+>;
 
 /// Everything that makes one picture Layer different from another.
 pub struct PictureSpec {
@@ -71,19 +105,21 @@ pub struct PictureSpec {
 
 /// The moment whose picture is wanted when the Simulation Clock is at `at`: the clock's
 /// own moment, or the present if the clock is ahead of it, rounded down to when a
-/// picture was made. For a daily picture, which is published a known while later,
-/// that is the picture shown; for one made every ten minutes it is where the search
-/// for a picture the Source holds starts. Returned with the way the Source writes it.
+/// picture was made. For a picture whose latest whole one is reckoned, that is the
+/// picture shown; for the others it is where the search for a picture the Source
+/// holds starts. Returned with the way the Source writes it.
 pub fn picture_moment(step: Step, at: JulianDate, real_now: JulianDate) -> (JulianDate, String) {
     match step {
         Step::Daily { lag_days } => {
             let moment = JulianDate(at.0.min(real_now.0 - lag_days));
             let day = moment.to_utc();
             let start = JulianDate::from_utc(day.year, day.month, day.day, 0, 0, 0.0);
-            (
-                start,
-                format!("{:04}-{:02}-{:02}", day.year, day.month, day.day),
-            )
+            (start, picture_day(start))
+        }
+        Step::DailyWhenHeld => {
+            let day = JulianDate(at.0.min(real_now.0)).to_utc();
+            let start = JulianDate::from_utc(day.year, day.month, day.day, 0, 0, 0.0);
+            (start, picture_day(start))
         }
         Step::TenMinutes => {
             // A second's grace, so a moment on the mark is not rounded down past it.
@@ -166,21 +202,14 @@ impl PictureLayer {
                 true
             }
         };
-        match self.spec.step {
-            Step::Daily { .. } => {
-                if settled {
-                    self.showing = Some(written);
-                }
+        if self.spec.step.is_asked() {
+            self.take_answer(now);
+            if settled && self.search.is_none() && self.should_ask(&written, moment, real_now, now)
+            {
+                self.ask(written, moment);
             }
-            Step::TenMinutes => {
-                self.take_answer(now);
-                if settled
-                    && self.search.is_none()
-                    && self.should_ask(&written, moment, real_now, now)
-                {
-                    self.ask(written, moment);
-                }
-            }
+        } else if settled {
+            self.showing = Some(written);
         }
     }
 
@@ -189,7 +218,7 @@ impl PictureLayer {
         let Some(search) = &self.search else { return };
         let outcome = match search.result.try_recv() {
             Ok(Ok(Some(found))) => {
-                self.showing = Some(picture_time(found));
+                self.showing = Some(self.spec.step.written()(found));
                 if found.0 + MINUTE / 2.0 >= search.moment.0 {
                     Outcome::Found
                 } else {
@@ -233,10 +262,11 @@ impl PictureLayer {
             return true;
         }
         let since = now.duration_since(answer.at);
-        let recent = real_now.0 - moment.0 < RECENT_DAYS;
+        let (recheck, recent_days) = self.spec.step.recheck();
+        let recent = real_now.0 - moment.0 < recent_days;
         match answer.outcome {
             Outcome::Found => false,
-            Outcome::FoundOlder | Outcome::Nothing => recent && since >= RECHECK,
+            Outcome::FoundOlder | Outcome::Nothing => recent && since >= recheck,
             Outcome::Failed(_) => since >= RETRY,
         }
     }
@@ -246,9 +276,10 @@ impl PictureLayer {
         let (sender, result) = mpsc::channel();
         let find = Arc::clone(&self.find);
         let tiles = self.spec.tiles.clone();
+        let step = self.spec.step;
         std::thread::spawn(move || {
             // The Layer may have been switched off meanwhile, which is no matter.
-            let _ = sender.send(find(&tiles, moment));
+            let _ = sender.send(find(&tiles, step, moment));
         });
         self.search = Some(Search {
             wanted,
@@ -330,7 +361,7 @@ impl Layer for PictureLayer {
             (None, Some(Outcome::Failed(error))) => {
                 format!("From {SOURCE}, but finding its picture failed: {error}.")
             }
-            (None, _) if self.on && self.spec.step == Step::TenMinutes => {
+            (None, _) if self.on && self.spec.step.is_asked() => {
                 format!("From {SOURCE}. Asking which pictures it holds.")
             }
             (None, _) => format!("From {SOURCE}."),
@@ -442,23 +473,23 @@ pub static HIMAWARI: PictureSpec = PictureSpec {
 pub static PRECIPITATION: PictureSpec = PictureSpec {
     name: "Rain and snow",
     tiles: tiles::PRECIPITATION,
-    step: Step::Daily { lag_days: 2.0 },
+    step: Step::DailyWhenHeld,
     kept_days: 14.0,
     opacity: 0.85,
     black_is_empty: false,
     note: "How hard it rained or snowed that day, estimated from many satellites \
-           together. Published two days later.",
+           together. Published a day or two later.",
     swatch: [100, 181, 246],
 };
 
 pub static SEA_SURFACE_TEMPERATURE: PictureSpec = PictureSpec {
     name: "Sea surface temperature",
     tiles: tiles::SEA_SURFACE_TEMPERATURE,
-    step: Step::Daily { lag_days: 2.0 },
+    step: Step::DailyWhenHeld,
     kept_days: 14.0,
     opacity: 0.85,
     black_is_empty: false,
-    note: "Warm water in reds, cold in blues. Published two days later.",
+    note: "Warm water in reds, cold in blues. Published a day or two later.",
     swatch: [255, 138, 101],
 };
 
@@ -484,7 +515,7 @@ mod tests {
 
     /// A Source that holds the picture for every moment asked about.
     fn holding_everything() -> FindPicture {
-        Arc::new(|_, moment| Ok(Some(moment)))
+        Arc::new(|_, _, moment| Ok(Some(moment)))
     }
 
     /// A Source whose newest picture is the one from `newest`, counting how often it
@@ -492,7 +523,7 @@ mod tests {
     fn holding_up_to(newest: JulianDate) -> (FindPicture, Arc<AtomicUsize>) {
         let asked = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&asked);
-        let find: FindPicture = Arc::new(move |_, moment: JulianDate| {
+        let find: FindPicture = Arc::new(move |_, _, moment: JulianDate| {
             count.fetch_add(1, Ordering::SeqCst);
             Ok(Some(JulianDate(moment.0.min(newest.0))))
         });
@@ -643,7 +674,7 @@ mod tests {
 
     #[test]
     fn a_source_holding_nothing_near_the_moment_shows_nothing_and_says_so() {
-        let mut layer = PictureLayer::new(&GOES_EAST, Arc::new(|_, _| Ok(None)));
+        let mut layer = PictureLayer::new(&GOES_EAST, Arc::new(|_, _, _| Ok(None)));
         layer.set_on(true);
         let real = at(25, 16, 40);
         answered(&mut layer, real, real, Instant::now());
@@ -660,7 +691,7 @@ mod tests {
         let asked = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&asked);
         // The first search finds its picture; every one after fails.
-        let find: FindPicture = Arc::new(move |_, moment| {
+        let find: FindPicture = Arc::new(move |_, _, moment| {
             if count.fetch_add(1, Ordering::SeqCst) == 0 {
                 Ok(Some(moment))
             } else {
@@ -702,7 +733,7 @@ mod tests {
 
     #[test]
     fn a_failed_first_search_gives_its_reason() {
-        let find: FindPicture = Arc::new(|_, _| Err(FetchError::Refused(503)));
+        let find: FindPicture = Arc::new(|_, _, _| Err(FetchError::Refused(503)));
         let mut layer = PictureLayer::new(&GOES_EAST, find);
         layer.set_on(true);
         let real = at(25, 16, 40);
@@ -774,6 +805,87 @@ mod tests {
         layer.show(at(25, 11, 0), at(25, 11, 0), Instant::now());
         assert_eq!(showing(&layer), Some("2026-11-24"));
         assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_daily_picture_that_is_asked_for_is_wanted_for_the_clocks_day() {
+        let step = Step::DailyWhenHeld;
+        let now = at(25, 18, 10);
+        // Live, the search starts from today: nothing is reckoned about how late
+        // the Source publishes.
+        let (moment, written) = picture_moment(step, now, now);
+        assert_eq!(written, "2026-11-25");
+        assert!((moment.0 - at(25, 0, 0).0).abs() < 1e-9);
+        assert_eq!(picture_moment(step, at(20, 23, 59), now).1, "2026-11-20");
+        assert_eq!(picture_moment(step, at(27, 0, 0), now).1, "2026-11-25");
+    }
+
+    #[test]
+    fn rain_and_sea_temperature_show_the_newest_day_held_not_a_reckoned_one() {
+        // On the 25th the Source holds the 24th's picture of each. Reckoning that
+        // they are published two days late showed the 23rd's.
+        for spec in [&PRECIPITATION, &SEA_SURFACE_TEMPERATURE] {
+            let asked = Arc::new(AtomicUsize::new(0));
+            let count = Arc::clone(&asked);
+            let find: FindPicture = Arc::new(move |_, step, moment: JulianDate| {
+                // The Source is told the picture is a daily one, so it asks by day.
+                assert_eq!(step, Step::DailyWhenHeld);
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(JulianDate(moment.0.min(at(24, 0, 0).0))))
+            });
+            let mut layer = PictureLayer::new(spec, find);
+            layer.set_on(true);
+            let real = at(25, 18, 10);
+            let start = Instant::now();
+
+            answered(&mut layer, real, real, start);
+            assert_eq!(showing(&layer), Some("2026-11-24"));
+            let Some(Picture::Overlay { tiles, .. }) = layer.picture() else {
+                panic!("no picture");
+            };
+            assert_eq!(tiles.time, "2026-11-24");
+            let status = layer.status(SystemTime::now()).text;
+            assert!(
+                status.contains("Showing the picture for 2026-11-24, the newest it holds."),
+                "{status}"
+            );
+
+            // Today's may yet be published, so it is asked after again: every half
+            // hour, not every few minutes as for a picture made every ten.
+            answered(
+                &mut layer,
+                real,
+                real,
+                start + RECHECK + Duration::from_secs(1),
+            );
+            assert_eq!(asked.load(Ordering::SeqCst), 1);
+            let later = start + DAILY_RECHECK + Duration::from_secs(1);
+            answered(&mut layer, real, real, later);
+            assert_eq!(asked.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn a_daily_picture_of_a_past_day_is_asked_for_once() {
+        let (find, asked) = holding_up_to(at(24, 0, 0));
+        let mut layer = PictureLayer::new(&PRECIPITATION, find);
+        layer.set_on(true);
+        let real = at(25, 18, 10);
+        let start = Instant::now();
+        answered(&mut layer, at(20, 15, 0), real, start);
+        assert_eq!(showing(&layer), Some("2026-11-20"));
+        let status = layer.status(SystemTime::now()).text;
+        assert!(
+            status.contains("Showing the picture for 2026-11-20."),
+            "{status}"
+        );
+        answered(
+            &mut layer,
+            at(20, 15, 0),
+            real,
+            start + Duration::from_secs(7200),
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
     }
 
     #[test]

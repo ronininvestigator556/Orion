@@ -95,11 +95,11 @@ pub const GOES_WEST: TileLayer = dated("GOES-West_ABI_GeoColor", "1km", "png", 6
 pub const HIMAWARI: TileLayer = dated("Himawari_AHI_Band13_Clean_Infrared", "2km", "png", 5);
 
 /// How hard it rained or snowed, estimated from many satellites together by NASA's
-/// IMERG. One picture a day, published a couple of days later.
+/// IMERG. One picture a day, published a day or two later.
 pub const PRECIPITATION: TileLayer = dated("IMERG_Precipitation_Rate", "2km", "png", 5);
 
 /// The temperature of the sea's surface, from many instruments combined. One picture
-/// a day, published a couple of days later.
+/// a day, published a day or two later.
 pub const SEA_SURFACE_TEMPERATURE: TileLayer =
     dated("GHRSST_L4_MUR_Sea_Surface_Temperature", "1km", "png", 6);
 
@@ -124,6 +124,9 @@ const TOP_TILES: [TileKey; 2] = [
 /// How many of the pictures listed are tried, newest first, before giving up: three
 /// hours' worth of one made every ten minutes.
 const PICTURES_TRIED: usize = 18;
+/// How far back from the moment wanted the list of pictures held is asked for, in
+/// days: far enough to find the newest picture of a Source that has fallen behind.
+const LISTED_DAYS_BACK: f64 = 7.0;
 
 /// The moments the service holds a picture for, as it lists them: stretches of
 /// evenly spaced pictures with gaps between, where one was never made or is not
@@ -239,7 +242,9 @@ pub fn picture_time(moment: JulianDate) -> String {
     )
 }
 
-fn day_of(moment: JulianDate) -> String {
+/// A moment written the way the service expects for a picture made once a day,
+/// such as `2026-11-24`: the day the moment falls in.
+pub fn picture_day(moment: JulianDate) -> String {
     let time = moment.to_utc();
     format!("{:04}-{:02}-{:02}", time.year, time.month, time.day)
 }
@@ -251,17 +256,21 @@ fn day_of(moment: JulianDate) -> String {
 /// one of its servers has them. So the list is asked for, and then the pictures on it
 /// are tried, newest first, until one answers. `Ok(None)` means none is held near
 /// `moment`. The tiles tried are stored in `cache`, ready to be drawn.
+///
+/// `written` is how the service expects this picture's moments written:
+/// [`picture_day`] for one made once a day, [`picture_time`] for one made more often.
 pub fn newest_picture(
     source: &TileSource,
     cache: Option<&TileCache>,
     layer: &TileLayer,
+    written: fn(JulianDate) -> String,
     moment: JulianDate,
 ) -> Result<Option<JulianDate>, FetchError> {
-    let held = source.held_times(layer, JulianDate(moment.0 - 1.0), moment)?;
+    let held = source.held_times(layer, JulianDate(moment.0 - LISTED_DAYS_BACK), moment)?;
     let mut candidate = held.latest_at_or_before(moment);
     for _ in 0..PICTURES_TRIED {
         let Some(at) = candidate else { break };
-        let picture = layer.at(picture_time(at));
+        let picture = layer.at(written(at));
         let served = TOP_TILES
             .iter()
             .try_for_each(|key| load_tile(source, cache, &picture, *key).map(drop));
@@ -324,8 +333,8 @@ impl TileSource {
             self.endpoint,
             layer.name,
             layer.matrix_set,
-            day_of(from),
-            day_of(to)
+            picture_day(from),
+            picture_day(to)
         )
     }
 
@@ -713,7 +722,14 @@ mod tests {
         let cache = TileCache::at(dir.path());
         let source = source(&server);
 
-        let found = newest_picture(&source, Some(&cache), &GOES_EAST, utc(25, 16, 40)).unwrap();
+        let found = newest_picture(
+            &source,
+            Some(&cache),
+            &GOES_EAST,
+            picture_time,
+            utc(25, 16, 40),
+        )
+        .unwrap();
         assert_eq!(picture_time(found.unwrap()), "2026-11-25T15:10:00Z");
         // The tiles tried on the way are kept, so showing the picture fetches no more.
         let top = TileKey {
@@ -733,8 +749,62 @@ mod tests {
         );
 
         // The clock moved back asks no further forward than where it is.
-        let earlier = newest_picture(&source, Some(&cache), &GOES_EAST, utc(25, 9, 4)).unwrap();
+        let earlier = newest_picture(
+            &source,
+            Some(&cache),
+            &GOES_EAST,
+            picture_time,
+            utc(25, 9, 4),
+        )
+        .unwrap();
         assert_eq!(picture_time(earlier.unwrap()), "2026-11-25T09:00:00Z");
+    }
+
+    #[test]
+    fn a_daily_picture_is_asked_for_by_its_day_however_late_it_is_published() {
+        // On the 25th the rain picture is listed up to the 24th, but only the 23rd's
+        // is served yet.
+        let server = FakeServer::start(|request| {
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            if path.ends_with(".xml") {
+                let listed = "<Domains><Domain>2026-11-10/2026-11-24/P1D</Domain></Domains>";
+                return (200, listed.to_owned());
+            }
+            if path.split('/').nth(3).unwrap_or_default() <= "2026-11-23" {
+                (200, "tile bytes".to_owned())
+            } else {
+                (404, "Not found".to_owned())
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let cache = TileCache::at(dir.path());
+        let source = source(&server);
+
+        let found = newest_picture(
+            &source,
+            Some(&cache),
+            &PRECIPITATION,
+            picture_day,
+            utc(25, 18, 10),
+        )
+        .unwrap();
+        assert_eq!(picture_day(found.unwrap()), "2026-11-23");
+        // It was asked for the way it will be drawn, so drawing it fetches no more.
+        let top = TileKey {
+            level: 0,
+            row: 0,
+            col: 0,
+        };
+        assert!(cache.get(&PRECIPITATION.at("2026-11-23"), top).is_some());
+        // The list reaches back a week, in case the Source has fallen days behind.
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|request| request.contains("/all/2026-11-18--2026-11-25.xml")),
+            "{:?}",
+            server.requests()
+        );
     }
 
     #[test]
@@ -743,7 +813,7 @@ mod tests {
         let server = serving_up_to("2026-11-25T15:10:00Z");
         let source = source(&server);
         assert_eq!(
-            newest_picture(&source, None, &GOES_EAST, utc(24, 12, 0)),
+            newest_picture(&source, None, &GOES_EAST, picture_time, utc(24, 12, 0)),
             Ok(None)
         );
 
@@ -757,7 +827,7 @@ mod tests {
         });
         let source = TileSource::with_endpoint(broken.endpoint().trim_end_matches("/gp.php"));
         assert_eq!(
-            newest_picture(&source, None, &GOES_EAST, utc(25, 16, 40)),
+            newest_picture(&source, None, &GOES_EAST, picture_time, utc(25, 16, 40)),
             Err(FetchError::Refused(503))
         );
 
@@ -765,7 +835,7 @@ mod tests {
         let wrong = FakeServer::start(|_| (200, "<html>Maintenance</html>".to_owned()));
         let source = TileSource::with_endpoint(wrong.endpoint().trim_end_matches("/gp.php"));
         assert_eq!(
-            newest_picture(&source, None, &GOES_EAST, utc(25, 16, 40)),
+            newest_picture(&source, None, &GOES_EAST, picture_time, utc(25, 16, 40)),
             Err(FetchError::NotPictureTimes)
         );
     }

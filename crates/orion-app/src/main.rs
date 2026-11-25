@@ -447,14 +447,15 @@ impl Session {
                 Arc::clone(&fetcher),
             )));
         }
-        // Pictures made many times a day are found by asking their Source which it holds.
+        // Most pictures are found by asking their Source which it holds.
         let picture_source = orion_data::tiles::TileSource::new();
         let picture_cache = layer_cache.as_ref().map(Cache::tiles);
-        let find: picture_layer::FindPicture = Arc::new(move |tiles, moment| {
+        let find: picture_layer::FindPicture = Arc::new(move |tiles, step, moment| {
             orion_data::tiles::newest_picture(
                 &picture_source,
                 picture_cache.as_ref(),
                 tiles,
+                step.written(),
                 moment,
             )
         });
