@@ -1,19 +1,28 @@
 //! Orion desktop app: window, event loop and frame pacing.
 
+mod camera;
+mod globe;
 mod renderer;
 mod ui;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
+use glam::DVec3;
+use orion_core::sun::{subsolar_point, sun_direction};
+use orion_core::time::JulianDate;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use renderer::Renderer;
+use camera::OrbitCamera;
+use renderer::{Renderer, Scene};
+
+/// Trackpads report scrolling in pixels; this many count as one zoom step.
+const PIXELS_PER_SCROLL_STEP: f32 = 50.0;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,orion=info"))
@@ -41,6 +50,10 @@ struct App {
 struct Running {
     window: Arc<Window>,
     renderer: Renderer,
+    camera: OrbitCamera,
+    /// True while the left button is held after being pressed over the scene.
+    dragging: bool,
+    cursor: Option<PhysicalPosition<f64>>,
     last_frame: Instant,
     frame_ms: f32,
 }
@@ -63,6 +76,9 @@ impl Running {
         Ok(Self {
             window,
             renderer,
+            camera: OrbitCamera::default(),
+            dragging: false,
+            cursor: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
         })
@@ -75,14 +91,68 @@ impl Running {
         // Exponential smoothing so the readout is legible.
         self.frame_ms += (elapsed_ms - self.frame_ms) * 0.05;
 
+        // Until the Simulation Clock exists, the scene always shows the present moment.
+        let now = julian_date_now();
+        let size = self.window.inner_size();
+        let scene = Scene {
+            view_projection: self
+                .camera
+                .view_projection(size.width as f32 / size.height.max(1) as f32),
+            sun_direction: DVec3::from_array(sun_direction(now)).as_vec3(),
+        };
+
         let frame_ms = self.frame_ms;
-        self.renderer.render(&self.window, |ctx, gpu| {
-            ui::draw(ctx, gpu, frame_ms);
+        let subsolar = subsolar_point(now);
+        self.renderer.render(&self.window, &scene, |ctx, gpu| {
+            ui::draw(ctx, gpu, frame_ms, subsolar);
         });
 
         // Positions change continuously, so draw every frame; vsync paces the loop.
         self.window.request_redraw();
     }
+
+    /// Applies a mouse or trackpad event to the camera.
+    fn on_scene_input(&mut self, event: &WindowEvent, used_by_interface: bool) {
+        match event {
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // A drag may only start over the scene, but always ends on release,
+                // wherever the cursor is by then.
+                self.dragging = *state == ElementState::Pressed && !used_by_interface;
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let (true, Some(previous)) = (self.dragging, self.cursor) {
+                    self.camera.drag(
+                        (position.x - previous.x) as f32,
+                        (position.y - previous.y) as f32,
+                        self.window.inner_size().height as f32,
+                    );
+                }
+                self.cursor = Some(*position);
+            }
+            WindowEvent::CursorLeft { .. } => self.cursor = None,
+            WindowEvent::MouseWheel { delta, .. } if !used_by_interface => {
+                let steps = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => *lines,
+                    MouseScrollDelta::PixelDelta(pixels) => {
+                        pixels.y as f32 / PIXELS_PER_SCROLL_STEP
+                    }
+                };
+                self.camera.zoom(steps);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn julian_date_now() -> JulianDate {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the system clock is set before 1970");
+    JulianDate::from_unix_seconds(since_epoch.as_secs_f64())
 }
 
 impl ApplicationHandler for App {
@@ -112,7 +182,8 @@ impl ApplicationHandler for App {
             return;
         };
 
-        running.renderer.on_window_event(&running.window, &event);
+        let used_by_interface = running.renderer.on_window_event(&running.window, &event);
+        running.on_scene_input(&event, used_by_interface);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),

@@ -19,6 +19,8 @@ egui-wgpu = "0.37"
 egui-winit = "0.37"
 env_logger = "0.11"
 glam = "0.34"
+# Only the JPEG decoder is needed, for the bundled Earth textures.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 log = "0.4"
 pollster = "1"
 wgpu = "30"

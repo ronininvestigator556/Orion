@@ -3,9 +3,12 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use glam::{Mat4, Vec3};
 use winit::event::WindowEvent;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
+
+use crate::globe::Globe;
 
 /// Background colour behind the globe, in linear RGB.
 const SPACE: wgpu::Color = wgpu::Color {
@@ -21,12 +24,24 @@ pub struct GpuInfo {
     pub backend: String,
 }
 
+/// What to draw this frame, in the Earth-fixed frame.
+pub struct Scene {
+    pub view_projection: Mat4,
+    /// Unit vector from Earth's centre to the Sun.
+    pub sun_direction: Vec3,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// sRGB twin of the surface format. The scene is drawn through a view in this
+    /// format so the GPU encodes its linear colours for display.
+    scene_format: wgpu::TextureFormat,
     gpu_info: GpuInfo,
+
+    globe: Globe,
 
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -64,11 +79,17 @@ impl Renderer {
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .context("the graphics adapter cannot draw to this window")?;
-        // egui blends in gamma space and wants a non-sRGB target.
+        // egui blends in gamma space and wants a non-sRGB target, while the scene is
+        // lit in linear colour and wants an sRGB one. One surface serves both by
+        // allowing a second view format.
         config.format =
             egui_wgpu::preferred_framebuffer_format(&surface.get_capabilities(&adapter).formats)
                 .context("no supported surface format")?;
+        let scene_format = config.format.add_srgb_suffix();
+        config.view_formats.push(scene_format);
         surface.configure(&device, &config);
+
+        let globe = Globe::new(&device, &queue, scene_format)?;
 
         let info = adapter.get_info();
         let gpu_info = GpuInfo {
@@ -97,16 +118,19 @@ impl Renderer {
             device,
             queue,
             config,
+            scene_format,
             gpu_info,
+            globe,
             egui_ctx,
             egui_state,
             egui_renderer,
         })
     }
 
-    /// Feeds a window event to the interface.
-    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) {
-        let _ = self.egui_state.on_window_event(window, event);
+    /// Feeds a window event to the interface. Returns true if the interface used it,
+    /// in which case the scene should ignore it.
+    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        self.egui_state.on_window_event(window, event).consumed
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -120,7 +144,12 @@ impl Renderer {
     }
 
     /// Draws one frame: the scene, then the interface built by `build_ui` on top.
-    pub fn render(&mut self, window: &Window, mut build_ui: impl FnMut(&egui::Context, &GpuInfo)) {
+    pub fn render(
+        &mut self,
+        window: &Window,
+        scene: &Scene,
+        mut build_ui: impl FnMut(&egui::Context, &GpuInfo),
+    ) {
         let mut reconfigure_after_present = false;
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
@@ -138,9 +167,16 @@ impl Renderer {
                 return;
             }
         };
-        let view = frame
+        let interface_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let scene_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.scene_format),
+            ..Default::default()
+        });
+
+        self.globe
+            .update(&self.queue, scene.view_projection, scene.sun_direction);
 
         let raw_input = self.egui_state.take_egui_input(window);
         let gpu_info = &self.gpu_info;
@@ -180,16 +216,32 @@ impl Renderer {
         );
 
         {
-            // The globe and Tracked Objects will be drawn in this pass, before the interface.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(SPACE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.globe.draw(&mut pass);
+        }
+
+        {
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("frame"),
+                    label: Some("interface"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: &interface_view,
                         resolve_target: None,
                         depth_slice: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(SPACE),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
                     })],

@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early scaffold. The app opens a window and draws a diagnostics panel; the globe is next.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. No Tracked Objects are shown yet.
 
 ## Run it
 
@@ -18,6 +18,10 @@ cargo run
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.
+
+## Credits
+
+- Earth imagery: NASA Blue Marble Next Generation and NASA Black Marble 2016, courtesy of NASA Earth Observatory. Both are in the public domain.
 
 ## Licence
 
