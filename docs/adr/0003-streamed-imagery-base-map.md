@@ -16,3 +16,4 @@ The first version drew Earth from a single bundled image, which is enough to wat
 - The globe needs a connection to look sharp. The bundled image stays as what is shown before tiles arrive and when offline.
 - There are no street names or minor roads. If Layers such as cameras turn out to need street context, the street map option is revisited then.
 - The camera must be able to come far closer than its first limit of about 640 km.
+- Coastlines are not drawn as lines after all: the imagery shows them better than a line can. Borders, major roads and place names are.

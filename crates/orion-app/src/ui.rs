@@ -8,8 +8,10 @@ use orion_core::clock::{MAX_OFFSET_DAYS, SimulationClock};
 use orion_core::layer::FeatureCard;
 use orion_core::time::JulianDate;
 
+use crate::basemap::BaseMapChoices;
 use crate::camera::ViewFrame;
 use crate::layer::Toggle;
+use crate::reference::PlaceLabel;
 use crate::renderer::GpuInfo;
 use crate::tracked::Summary;
 
@@ -75,7 +77,8 @@ pub fn draw_about(ctx: &egui::Context) {
 
             ui.separator();
             ui.label("Orbital data and catalogue: CelesTrak, from the catalogue published by the U.S. Space Force at Space-Track.org.");
-            ui.label("Earth imagery: NASA Blue Marble Next Generation and Black Marble 2016.");
+            ui.label("Earth imagery: NASA Blue Marble and Black Marble, and a Landsat composite, streamed from NASA's Global Imagery Browse Services.");
+            ui.label("Borders, roads and place names: Natural Earth, in the public domain.");
             ui.label("Stars: the Yale Bright Star Catalogue, 5th revised edition.");
 
             ui.separator();
@@ -88,6 +91,7 @@ pub fn draw_about(ctx: &egui::Context) {
 pub struct ViewChoices {
     pub frame: ViewFrame,
     pub following: bool,
+    pub base_map: BaseMapChoices,
 }
 
 /// Draws the View panel, which edits `choices` in place. `can_follow` says whether a
@@ -112,6 +116,21 @@ pub fn draw_view(ctx: &egui::Context, choices: &mut ViewChoices, can_follow: boo
             )
             .on_hover_text("Keeps the selected object centred as it moves.")
             .on_disabled_hover_text("Select an object to follow it.");
+
+            ui.separator();
+            ui.label("Base Map");
+            ui.checkbox(&mut choices.base_map.imagery, "Sharper imagery")
+                .on_hover_text(
+                    "Pictures of the ground that sharpen as you move closer, fetched from \
+                     NASA's Global Imagery Browse Services. When off, nothing is fetched and \
+                     the picture that comes with Orion is shown.",
+                );
+            ui.checkbox(&mut choices.base_map.borders, "Borders")
+                .on_hover_text("Country borders and, closer in, state and province lines.");
+            ui.checkbox(&mut choices.base_map.roads, "Major roads")
+                .on_hover_text("Motorways and main roads, shown close to the ground.");
+            ui.checkbox(&mut choices.base_map.names, "Place names")
+                .on_hover_text("Countries and cities, more of them the closer you are.");
         });
 }
 
@@ -343,6 +362,50 @@ pub fn draw_selected(
             actions.clear = ui.button("Clear selection").clicked();
         });
     actions
+}
+
+/// Draws the names of countries and cities over the Base Map, beneath every panel.
+pub fn draw_place_names(ctx: &egui::Context, labels: &[PlaceLabel<'_>]) {
+    use orion_core::reference::PlaceKind;
+
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let shadow = egui::Color32::from_black_alpha(200);
+    let ink = egui::Color32::from_rgb(235, 235, 225);
+    for label in labels {
+        let (anchor, align, font) = match label.kind {
+            PlaceKind::Country => (
+                label.position,
+                egui::Align2::CENTER_CENTER,
+                egui::FontId::proportional(15.0),
+            ),
+            PlaceKind::Capital | PlaceKind::City => (
+                label.position + egui::vec2(7.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                egui::FontId::proportional(12.0),
+            ),
+        };
+        match label.kind {
+            PlaceKind::Country => {}
+            // A capital is a ring, any other city a dot.
+            PlaceKind::Capital => {
+                painter.circle_filled(label.position, 3.5, shadow);
+                painter.circle_stroke(label.position, 3.0, egui::Stroke::new(1.5, ink));
+            }
+            PlaceKind::City => {
+                painter.circle_filled(label.position, 3.0, shadow);
+                painter.circle_filled(label.position, 2.0, ink);
+            }
+        }
+        // A dark copy underneath keeps the name legible over bright ground.
+        painter.text(
+            anchor + egui::vec2(1.0, 1.0),
+            align,
+            label.name,
+            font.clone(),
+            shadow,
+        );
+        painter.text(anchor, align, label.name, font, ink);
+    }
 }
 
 /// Draws a name next to each given point on screen, in logical points.

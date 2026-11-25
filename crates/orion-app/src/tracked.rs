@@ -17,8 +17,6 @@ use crate::objects::{Instance, Marks};
 const STALE_AFTER_DAYS: f64 = 30.0;
 /// Points used to draw one revolution of an Orbit Path or Ground Track.
 const PATH_SAMPLES: usize = 361;
-/// Radius, in Earth radii, at which the Ground Track is drawn: just clear of the surface.
-const GROUND_TRACK_RADIUS: f32 = 1.003;
 
 /// Which Tracked Objects, by index, should stand out in the next frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -280,7 +278,7 @@ impl Tracked {
     }
 
     /// The Ground Track of one Tracked Object for one revolution from the given moment,
-    /// as points just above the globe's surface, in Earth radii.
+    /// as points on the globe's surface, in Earth radii.
     pub fn ground_track(&self, index: usize, at: JulianDate) -> Vec<Vec3> {
         self.objects.get(index).map_or_else(Vec::new, |object| {
             object
@@ -288,7 +286,7 @@ impl Tracked {
                 .ground_path(at, PATH_SAMPLES)
                 .into_iter()
                 // The globe is drawn as a sphere, so "beneath" is towards its centre.
-                .map(|position_km| to_earth_radii(position_km).normalize() * GROUND_TRACK_RADIUS)
+                .map(|position_km| to_earth_radii(position_km).normalize())
                 .collect()
         })
     }
@@ -503,7 +501,7 @@ mod tests {
         let ground_track = tracked.ground_track(index, snapshot_moment());
         assert_eq!(ground_track.len(), PATH_SAMPLES);
         for point in &ground_track {
-            assert!((point.length() - GROUND_TRACK_RADIUS).abs() < 1e-5);
+            assert!((point.length() - 1.0).abs() < 1e-5);
         }
         // Both start beneath the same spot.
         assert!(

@@ -48,10 +48,20 @@ impl PickView {
     }
 }
 
+/// Points no farther than this from Earth's centre count as on the ground.
+/// The shaders use the same figure.
+const GROUND_RADIUS: f32 = 1.0005;
+
 /// True if the straight line from the camera to `point` passes through Earth first.
 /// Earth is the unit sphere at the origin and the camera is outside it. This mirrors
 /// the test the shaders use, so what can be picked is exactly what is drawn.
 fn hidden_by_earth(camera: Vec3, point: Vec3) -> bool {
+    let radius_squared = point.length_squared();
+    if radius_squared < GROUND_RADIUS * GROUND_RADIUS {
+        // On the ground the line of sight ends on the sphere itself, where rounding
+        // would decide the test below. Such a point is hidden only over the horizon.
+        return point.dot(camera) < radius_squared.sqrt();
+    }
     let to_point = point - camera;
     let a = to_point.length_squared();
     let half_b = camera.dot(to_point);

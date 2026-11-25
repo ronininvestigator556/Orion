@@ -8,6 +8,7 @@ mod cache;
 mod source;
 #[cfg(test)]
 mod test_support;
+pub mod tiles;
 
 use std::fmt;
 use std::io;

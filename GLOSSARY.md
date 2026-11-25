@@ -19,7 +19,7 @@ One thing shown on a Layer: a fixed place such as a mine, a route such as a pipe
 _Avoid_: Entity, item, marker, point of interest
 
 **Base Map**:
-The picture of Earth's surface drawn beneath every Layer, which sharpens as the view moves closer.
+The picture of Earth's surface drawn beneath every Layer, which sharpens as the view moves closer, together with the borders, major roads and place names that make it readable.
 _Avoid_: Background, tiles, imagery layer
 
 **Cluster**:

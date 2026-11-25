@@ -3,6 +3,7 @@
 // A released Windows build is a windowed app and should not open a console beside it.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod basemap;
 mod camera;
 mod feed;
 mod globe;
@@ -11,6 +12,7 @@ mod lines;
 mod objects;
 mod orbit_layer;
 mod picking;
+mod reference;
 mod renderer;
 mod sidebar;
 mod stars;
@@ -18,7 +20,7 @@ mod tracked;
 mod ui;
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use glam::{DVec3, Mat4, Vec2, Vec3};
@@ -59,6 +61,10 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let options = parse_options(std::env::args().skip(1))?;
+    if let Some(path) = options.snapshot.clone() {
+        let wait = options.wait_seconds.unwrap_or(SNAPSHOT_WAIT_SECONDS);
+        return snapshot(options, &path, Duration::from_secs_f64(wait));
+    }
     let event_loop = EventLoop::new().context("creating the event loop")?;
     let mut app = App {
         options,
@@ -75,7 +81,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// What the command line asked for.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Options {
     /// Catalogue number of a Tracked Object to select at launch.
     select: Option<u32>,
@@ -87,10 +93,52 @@ struct Options {
     star_fixed: bool,
     /// Start in Follow Mode, which needs `--select` to have something to follow.
     follow: bool,
+    /// Start looking down on this place.
+    at: Option<Place>,
+    /// Draw to this picture file, with no window, and exit.
+    snapshot: Option<std::path::PathBuf>,
+    /// How long to run before taking the snapshot, in seconds.
+    wait_seconds: Option<f64>,
+}
+
+/// Size of a snapshot in pixels, and its pixels per logical point: the same as the
+/// app's default window on a high-density display.
+const SNAPSHOT_SIZE: [u32; 2] = [2560, 1600];
+const SNAPSHOT_SCALE: f64 = 2.0;
+/// How long a snapshot runs before the picture is taken, unless `--wait` says otherwise.
+const SNAPSHOT_WAIT_SECONDS: f64 = 8.0;
+
+/// Where to start looking: a latitude and longitude in degrees, north and east
+/// positive, and optionally a height above the surface in kilometres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Place {
+    latitude_deg: f64,
+    longitude_deg: f64,
+    altitude_km: Option<f64>,
+}
+
+fn parse_place(text: &str) -> Option<Place> {
+    let mut numbers = text.split(',').map(|part| part.trim().parse::<f64>());
+    let latitude_deg = numbers.next()?.ok()?;
+    let longitude_deg = numbers.next()?.ok()?;
+    let altitude_km = match numbers.next() {
+        Some(altitude) => Some(altitude.ok()?),
+        None => None,
+    };
+    let valid = numbers.next().is_none()
+        && (-90.0..=90.0).contains(&latitude_deg)
+        && (-180.0..=180.0).contains(&longitude_deg)
+        && altitude_km.is_none_or(|altitude| altitude > 0.0);
+    valid.then_some(Place {
+        latitude_deg,
+        longitude_deg,
+        altitude_km,
+    })
 }
 
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
-     [--star-fixed] [--find <name or number>]";
+     [--star-fixed] [--find <name or number>] [--at <latitude>,<longitude>[,<km above>]] \
+     [--snapshot <picture file> [--wait <seconds>]]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
     let mut options = Options::default();
@@ -108,6 +156,38 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
             "--ground-track" => options.ground_track = true,
             "--star-fixed" => options.star_fixed = true,
             "--follow" => options.follow = true,
+            "--at" => {
+                let place = arguments
+                    .next()
+                    .with_context(|| format!("--at needs a place\n{USAGE}"))?;
+                options.at = Some(parse_place(&place).with_context(|| {
+                    format!(
+                        "{place:?} is not a latitude,longitude or latitude,longitude,km\n{USAGE}"
+                    )
+                })?);
+            }
+            "--snapshot" => {
+                options.snapshot = Some(
+                    arguments
+                        .next()
+                        .with_context(|| format!("--snapshot needs a file name\n{USAGE}"))?
+                        .into(),
+                );
+            }
+            "--wait" => {
+                let seconds = arguments
+                    .next()
+                    .with_context(|| format!("--wait needs a number of seconds\n{USAGE}"))?;
+                options.wait_seconds = Some(
+                    seconds
+                        .parse()
+                        .ok()
+                        .filter(|seconds: &f64| (0.0..=600.0).contains(seconds))
+                        .with_context(|| {
+                            format!("{seconds:?} is not a number of seconds\n{USAGE}")
+                        })?,
+                );
+            }
             "--find" => {
                 options.find = Some(
                     arguments
@@ -131,6 +211,12 @@ struct App {
 /// Everything that exists only once the window is open.
 struct Running {
     window: Arc<Window>,
+    session: Session,
+}
+
+/// Everything Orion shows and how the user has arranged it. It draws through whatever
+/// the renderer is aimed at, so it runs the same with a window or without one.
+struct Session {
     renderer: Renderer,
     rig: CameraRig,
     /// How far, in radians, Earth has turned against the stars at the moment on show.
@@ -142,6 +228,9 @@ struct Running {
     /// The Feature under the cursor.
     hovered: Option<FeatureRef>,
     sidebar: sidebar::Sidebar,
+    /// What the user has chosen to see of the Base Map.
+    base_map: basemap::BaseMapChoices,
+    place_names: reference::PlaceNames,
     /// Line segments for the current frame, kept to reuse the allocation.
     segments: Vec<Segment>,
     /// True while the left button is held after being pressed over the scene.
@@ -164,15 +253,63 @@ impl Running {
                 .create_window(attributes)
                 .context("creating the window")?,
         );
+        let cache = default_cache();
         let renderer = pollster::block_on(Renderer::new(
             window.clone(),
             event_loop.owned_display_handle(),
+            cache.as_ref().map(Cache::tiles),
         ))?;
+        Ok(Self {
+            window,
+            session: Session::new(renderer, cache, options)?,
+        })
+    }
 
-        let cache = Cache::in_default_location();
-        if cache.is_none() {
-            log::warn!("no cache folder is available; Element Sets will not be fetched");
+    fn redraw(&mut self) {
+        self.session.frame();
+        // Positions change continuously, so draw every frame; vsync paces the loop.
+        self.window.request_redraw();
+    }
+}
+
+/// The cache folder, with a warning if the system has nowhere to put one.
+fn default_cache() -> Option<Cache> {
+    let cache = Cache::in_default_location();
+    if cache.is_none() {
+        log::warn!("no cache folder is available; nothing fetched will be kept");
+    }
+    cache
+}
+
+/// Draws Orion to a picture file with no window, after running for `wait` so that
+/// data arriving over several frames, such as Base Map tiles, has time to load.
+fn snapshot(options: Options, path: &std::path::Path, wait: Duration) -> anyhow::Result<()> {
+    let cache = default_cache();
+    let renderer = pollster::block_on(Renderer::offscreen(
+        SNAPSHOT_SIZE[0],
+        SNAPSHOT_SIZE[1],
+        SNAPSHOT_SCALE,
+        cache.as_ref().map(Cache::tiles),
+    ))?;
+    let mut session = Session::new(renderer, cache, options)?;
+    let until = Instant::now() + wait;
+    loop {
+        session.frame();
+        if Instant::now() >= until {
+            break;
         }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    session
+        .renderer
+        .read_picture()?
+        .save(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+impl Session {
+    fn new(renderer: Renderer, cache: Option<Cache>, options: Options) -> anyhow::Result<Self> {
         let mut orbit = OrbitLayer::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
         orbit.set_show_ground_track(options.ground_track);
         let search = options.find.unwrap_or_default();
@@ -200,9 +337,17 @@ impl Running {
             rig.set_frame(ViewFrame::StarFixed, sidereal_angle);
         }
         rig.set_following(options.follow && selected.is_some());
+        if let Some(place) = options.at {
+            let (sin_lat, cos_lat) = place.latitude_deg.to_radians().sin_cos();
+            let (sin_lon, cos_lon) = place.longitude_deg.to_radians().sin_cos();
+            let direction = glam::DVec3::new(cos_lat * cos_lon, cos_lat * sin_lon, sin_lat);
+            rig.face(direction.as_vec3(), sidereal_angle);
+            if let Some(altitude_km) = place.altitude_km {
+                rig.set_altitude((altitude_km / orion_core::EARTH_EQUATORIAL_RADIUS_KM) as f32);
+            }
+        }
 
         Ok(Self {
-            window,
             renderer,
             rig,
             sidereal_angle,
@@ -212,6 +357,8 @@ impl Running {
             selected,
             hovered: None,
             sidebar: sidebar::Sidebar { search },
+            base_map: basemap::BaseMapChoices::default(),
+            place_names: reference::PlaceNames::bundled(),
             segments: Vec::new(),
             dragging: false,
             pressed_at: None,
@@ -221,7 +368,8 @@ impl Running {
         })
     }
 
-    fn redraw(&mut self) {
+    /// Advances everything by one frame and draws it.
+    fn frame(&mut self) {
         let now = Instant::now();
         let elapsed_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
@@ -278,7 +426,7 @@ impl Running {
         self.layers.lines(selected, now, &mut self.segments);
 
         // Name the selected and hovered Features next to their dots.
-        let scale_factor = self.window.scale_factor() as f32;
+        let scale_factor = self.renderer.scale_factor() as f32;
         let mut labels = Vec::new();
         for feature in [
             selected,
@@ -301,6 +449,13 @@ impl Running {
             }
         }
 
+        let place_labels = if self.base_map.names {
+            self.place_names
+                .labels(&pick_view, scale_factor, sidebar::WIDTH)
+        } else {
+            Vec::new()
+        };
+
         let diagnostics = ui::Diagnostics {
             frame_ms: self.frame_ms,
             subsolar: subsolar_point(now),
@@ -315,6 +470,7 @@ impl Running {
         let mut view_choices = ui::ViewChoices {
             frame: self.rig.frame(),
             following: self.rig.is_following(),
+            base_map: self.base_map,
         };
         let can_follow = selected.is_some();
         let mut clock_action = None;
@@ -331,14 +487,17 @@ impl Running {
             objects: &dots,
             lines: &self.segments,
             sidereal_angle: self.sidereal_angle,
+            base_map: self.base_map,
         };
         let layers = &mut self.layers;
         let sidebar = &mut self.sidebar;
         let clock_panel = &mut self.clock_panel;
-        self.renderer.render(&self.window, &scene, |ui, gpu| {
+        self.renderer.render(&scene, |ui, gpu| {
             picked =
                 sidebar::draw(ui, layers, sidebar, now, real_now, SystemTime::now()).or(picked);
             let ctx = ui.ctx().clone();
+            // Place names first, so a Feature's name is drawn over them.
+            ui::draw_place_names(&ctx, &place_labels);
             ui::draw_labels(&ctx, &labels);
             ui::draw_view(&ctx, &mut view_choices, can_follow);
             ui::draw_about(&ctx);
@@ -374,14 +533,12 @@ impl Running {
             Some(ui::ClockAction::ReturnToLive) => self.clock.return_to_live(real_now),
             None => {}
         }
+        self.base_map = view_choices.base_map;
         self.rig.set_frame(view_choices.frame, self.sidereal_angle);
         self.rig.set_following(view_choices.following && can_follow);
         if selection_actions.clear {
             self.selected = None;
         }
-
-        // Positions change continuously, so draw every frame; vsync paces the loop.
-        self.window.request_redraw();
     }
 
     /// The camera and window facts that relate the scene to the cursor, for this frame.
@@ -391,12 +548,12 @@ impl Running {
 
     /// The same, for the camera as it stands when Earth has turned by `sidereal_angle`.
     fn pick_view_at(&self, sidereal_angle: f32) -> PickView {
-        let size = self.window.inner_size();
+        let size = self.renderer.size();
         let camera = self.rig.scene_camera(sidereal_angle);
         // Slide the picture right so the globe sits in the middle of the space beside
         // the sidebar, not the middle of the window. Clip space is 2 units wide.
         let width = size.width.max(1) as f32;
-        let shift = sidebar::WIDTH * self.window.scale_factor() as f32 / width;
+        let shift = sidebar::WIDTH * self.renderer.scale_factor() as f32 / width;
         let centre_beside_sidebar = Mat4::from_translation(Vec3::new(shift, 0.0, 0.0));
         PickView {
             view_projection: centre_beside_sidebar
@@ -411,7 +568,7 @@ impl Running {
         let dot = view.pick(
             self.layers.dots(),
             Vec2::new(cursor.x as f32, cursor.y as f32),
-            PICK_REACH_POINTS * self.window.scale_factor() as f32,
+            PICK_REACH_POINTS * self.renderer.scale_factor() as f32,
         )?;
         self.layers.feature_at(dot)
     }
@@ -467,7 +624,7 @@ impl Running {
                 self.dragging = false;
                 if let (Some(pressed_at), Some(cursor)) = (self.pressed_at.take(), self.cursor) {
                     let moved = (cursor.x - pressed_at.x).hypot(cursor.y - pressed_at.y);
-                    if moved < CLICK_SLOP_POINTS * self.window.scale_factor() {
+                    if moved < CLICK_SLOP_POINTS * self.renderer.scale_factor() {
                         self.click(cursor);
                     }
                 }
@@ -477,7 +634,7 @@ impl Running {
                     self.rig.drag(
                         (position.x - previous.x) as f32,
                         (position.y - previous.y) as f32,
-                        self.window.inner_size().height as f32,
+                        self.renderer.size().height as f32,
                     );
                 }
                 self.cursor = Some(*position);
@@ -544,12 +701,13 @@ impl ApplicationHandler for App {
             return;
         };
 
-        let used_by_interface = running.renderer.on_window_event(&running.window, &event);
-        running.on_scene_input(&event, used_by_interface);
+        let session = &mut running.session;
+        let used_by_interface = session.renderer.on_window_event(&event);
+        session.on_scene_input(&event, used_by_interface);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => running.renderer.resize(size.width, size.height),
+            WindowEvent::Resized(size) => running.session.renderer.resize(size.width, size.height),
             WindowEvent::RedrawRequested => running.redraw(),
             _ => {}
         }
@@ -579,7 +737,32 @@ mod tests {
                 find: None,
                 star_fixed: false,
                 follow: false,
+                at: None,
+                snapshot: None,
+                wait_seconds: None,
             }
+        );
+        let picture = parse(&["--snapshot", "out.png", "--wait", "2.5"]).unwrap();
+        assert_eq!(
+            picture.snapshot.as_deref(),
+            Some(std::path::Path::new("out.png"))
+        );
+        assert_eq!(picture.wait_seconds, Some(2.5));
+        assert_eq!(
+            parse(&["--at", "37.77,-122.42,60"]).unwrap().at,
+            Some(Place {
+                latitude_deg: 37.77,
+                longitude_deg: -122.42,
+                altitude_km: Some(60.0),
+            })
+        );
+        assert_eq!(
+            parse(&["--at", "-33.9, 151.2"])
+                .unwrap()
+                .at
+                .unwrap()
+                .altitude_km,
+            None
         );
         let views = parse(&["--star-fixed", "--follow"]).unwrap();
         assert!(views.star_fixed && views.follow);
@@ -595,6 +778,15 @@ mod tests {
             &["--select"][..],
             &["--select", "station"],
             &["--find"],
+            &["--snapshot"],
+            &["--wait"],
+            &["--wait", "soon"],
+            &["--wait", "-1"],
+            &["--at"],
+            &["--at", "north pole"],
+            &["--at", "95,0"],
+            &["--at", "10,20,-5"],
+            &["--at", "10,20,30,40"],
             &["--wat"],
         ] {
             let error = parse(arguments).unwrap_err();

@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers on show, with a search box across them; the satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers on show, with a search box across them; the satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Download
 
@@ -34,6 +34,18 @@ To start with a search already typed in, use `--find`:
 cargo run -- --find "noaa 2"
 ```
 
+To start looking down on a place, give `--at` a latitude and longitude in degrees and, optionally, a height in kilometres. This looks at Paris from 200 km up:
+
+```bash
+cargo run -- --at 48.85,2.35,200
+```
+
+To draw a picture to a file without opening a window, add `--snapshot` and, to give streamed imagery longer to arrive, `--wait` with a number of seconds:
+
+```bash
+cargo run -- --at 48.85,2.35,200 --snapshot paris.png --wait 15
+```
+
 ## Releasing
 
 1. Set `version` under `[workspace.package]` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and commit.
@@ -46,8 +58,8 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 ## Layout
 
 - `crates/orion-core`: headless orbital maths (propagation, time, coordinate conversion), with no graphics dependencies.
-- `crates/orion-data`: fetching Element Sets and caching them on disk, with the rules for how often a source may be asked.
-- `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`.
+- `crates/orion-data`: fetching Element Sets and Base Map tiles and caching them on disk, with the rules for how often a source may be asked.
+- `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`. The borders, roads and place names in its `assets` folder are built from Natural Earth by `cargo run --release --package orion-core --example make_reference`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
 - `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
 - `.github/workflows/`: checks run on every push, and the release build.
@@ -57,6 +69,8 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 ## Credits
 
 - Earth imagery: NASA Blue Marble Next Generation and NASA Black Marble 2016, courtesy of NASA Earth Observatory. Both are in the public domain.
+- Streamed imagery: Blue Marble and the Landsat WELD composite, provided by NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth Science Data and Information System (ESDIS).
+- Borders, roads and place names: made with [Natural Earth](https://www.naturalearthdata.com), free vector map data in the public domain.
 - Stars: the Yale Bright Star Catalogue, 5th revised edition (Hoffleit and Warren, 1991), which is in the public domain.
 - Orbital data: Element Sets from [CelesTrak](https://celestrak.org), derived from the catalogue published by the U.S. Space Force at Space-Track.org.
 

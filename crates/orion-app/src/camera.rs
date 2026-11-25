@@ -6,9 +6,10 @@ use glam::camera::rh::view;
 use glam::{Mat4, Vec3};
 
 /// Vertical field of view.
-const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
-/// Closest approach, in Earth radii from the centre (about 640 km above the surface).
-const MIN_DISTANCE: f32 = 1.1;
+pub const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
+/// Closest approach, in Earth radii from the centre: about 25 km above the surface,
+/// where the streamed Base Map's finest imagery is roughly one pixel per pixel.
+const MIN_DISTANCE: f32 = 1.004;
 /// Farthest retreat, in Earth radii from the centre (well beyond the geostationary ring at 6.6).
 const MAX_DISTANCE: f32 = 30.0;
 /// Stops short of the poles, where "up" would become undefined.
@@ -68,6 +69,12 @@ impl OrbitCamera {
         }
     }
 
+    /// Places the camera at the given height above the surface, in Earth radii, as near
+    /// as its limits allow.
+    pub fn set_altitude(&mut self, altitude: f32) {
+        self.distance = (1.0 + altitude).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
     /// Moves towards the globe for positive `steps` and away for negative ones.
     /// Each step changes the altitude by a fixed fraction, so zooming feels even at any height.
     pub fn zoom(&mut self, steps: f32) {
@@ -85,7 +92,9 @@ impl OrbitCamera {
     pub fn view_projection(&self, aspect: f32) -> Mat4 {
         let view = view::look_at_mat4(self.position(), Vec3::ZERO, Vec3::Z);
         // Nothing is depth-tested yet, so the planes only need to contain the scene.
-        let projection = perspective(FOV_Y, aspect, 0.01, 2.0 * MAX_DISTANCE);
+        // The near plane has to stay between the camera and the ground however low it flies.
+        let near = ((self.distance - 1.0) * 0.1).clamp(1e-5, 0.01);
+        let projection = perspective(FOV_Y, aspect, near, 2.0 * MAX_DISTANCE);
         projection * view
     }
 }
@@ -157,6 +166,11 @@ impl CameraRig {
 
     pub fn zoom(&mut self, steps: f32) {
         self.camera.zoom(steps);
+    }
+
+    /// Places the camera at the given height above the surface, in Earth radii.
+    pub fn set_altitude(&mut self, altitude: f32) {
+        self.camera.set_altitude(altitude);
     }
 
     /// Turns the camera to look straight down on `position`, given in the scene's
@@ -329,6 +343,17 @@ mod tests {
         let before = camera;
         camera.face(Vec3::ZERO);
         assert_eq!(camera, before);
+    }
+
+    #[test]
+    fn altitude_is_set_within_the_cameras_limits() {
+        let mut camera = camera(0.0, 0.0, 3.0);
+        camera.set_altitude(0.5);
+        assert_eq!(camera.distance, 1.5);
+        camera.set_altitude(0.0);
+        assert_eq!(camera.distance, MIN_DISTANCE);
+        camera.set_altitude(1_000.0);
+        assert_eq!(camera.distance, MAX_DISTANCE);
     }
 
     #[test]

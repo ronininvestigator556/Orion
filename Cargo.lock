@@ -2047,6 +2047,7 @@ name = "orion-core"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "serde_json",
  "sgp4",
 ]
 

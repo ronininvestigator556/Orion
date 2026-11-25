@@ -10,3 +10,7 @@ repository.workspace = true
 [dependencies]
 csv.workspace = true
 sgp4.workspace = true
+
+[dev-dependencies]
+# Only the tool that builds the bundled Base Map lines reads JSON.
+serde_json = "1"

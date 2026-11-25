@@ -1,11 +1,15 @@
-//! Lines of a fixed width on screen, used for the Orbit Path and the Ground Track.
+//! Lines of a fixed width on screen, used for the Orbit Path, the Ground Track and the
+//! borders and roads over the Base Map.
+
+use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
 use crate::objects::View;
 
-/// Width of a line in logical points; multiplied by the display's scale factor for pixels.
+/// Usual width of a line in logical points; multiplied by the display's scale factor
+/// for pixels.
 const WIDTH_POINTS: f32 = 1.5;
 
 /// One straight piece of a line.
@@ -19,13 +23,23 @@ pub struct Segment {
     color: [f32; 4],
 }
 
+impl Segment {
+    pub fn new(start: Vec3, end: Vec3, color: [f32; 4]) -> Self {
+        Self {
+            start: start.to_array(),
+            end: end.to_array(),
+            color,
+        }
+    }
+}
+
 /// Appends the segments joining `points` in order to `segments`.
 pub fn push_polyline(segments: &mut Vec<Segment>, points: &[Vec3], color: [f32; 4]) {
-    segments.extend(points.windows(2).map(|pair| Segment {
-        start: pair[0].to_array(),
-        end: pair[1].to_array(),
-        color,
-    }));
+    segments.extend(
+        points
+            .windows(2)
+            .map(|pair| Segment::new(pair[0], pair[1], color)),
+    );
 }
 
 #[repr(C)]
@@ -46,11 +60,21 @@ pub struct Lines {
     segment_buffer: Option<wgpu::Buffer>,
     capacity: usize,
     count: u32,
+    width_points: f32,
 }
 
 impl Lines {
     /// `target_format` must be an sRGB format, because the shader outputs linear colour.
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        Self::with_width(device, target_format, WIDTH_POINTS)
+    }
+
+    /// As [`Self::new`], with lines `width_points` logical points wide.
+    pub fn with_width(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        width_points: f32,
+    ) -> Self {
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("line uniforms"),
             size: size_of::<Uniforms>() as u64,
@@ -130,6 +154,7 @@ impl Lines {
             segment_buffer: None,
             capacity: 0,
             count: 0,
+            width_points,
         }
     }
 
@@ -141,15 +166,29 @@ impl Lines {
         view: &View,
         segments: &[Segment],
     ) {
+        self.set_view(queue, view);
+        self.set_segments(device, queue, segments);
+    }
+
+    /// Sets the view for the next draw, keeping the segments as they are.
+    pub fn set_view(&self, queue: &wgpu::Queue, view: &View) {
         let uniforms = Uniforms {
             view_projection: view.view_projection.to_cols_array_2d(),
             camera_position: view.camera_position.to_array(),
-            half_width: 0.5 * WIDTH_POINTS * view.scale_factor,
+            half_width: 0.5 * self.width_points * view.scale_factor,
             viewport: view.viewport.map(|pixels| pixels as f32),
             _padding: [0.0; 2],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
 
+    /// Replaces the segments.
+    pub fn set_segments(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        segments: &[Segment],
+    ) {
         if segments.len() > self.capacity {
             self.capacity = segments.len();
             self.segment_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -166,17 +205,27 @@ impl Lines {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw_ranges(pass, std::slice::from_ref(&(0..self.count)));
+    }
+
+    /// Draws only the segments whose indexes fall in `ranges`.
+    pub fn draw_ranges(&self, pass: &mut wgpu::RenderPass<'_>, ranges: &[Range<u32>]) {
         let Some(buffer) = &self.segment_buffer else {
             return;
         };
-        if self.count == 0 {
+        if self.count == 0 || ranges.is_empty() {
             return;
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         let used_bytes = self.count as u64 * size_of::<Segment>() as u64;
         pass.set_vertex_buffer(0, buffer.slice(..used_bytes));
-        pass.draw(0..4, 0..self.count);
+        for range in ranges {
+            let range = range.start.min(self.count)..range.end.min(self.count);
+            if !range.is_empty() {
+                pass.draw(0..4, range);
+            }
+        }
     }
 }
 
@@ -192,16 +241,8 @@ mod tests {
         assert_eq!(
             segments,
             [
-                Segment {
-                    start: [1.0, 0.0, 0.0],
-                    end: [0.0, 1.0, 0.0],
-                    color
-                },
-                Segment {
-                    start: [0.0, 1.0, 0.0],
-                    end: [0.0, 0.0, 1.0],
-                    color
-                },
+                Segment::new(Vec3::X, Vec3::Y, color),
+                Segment::new(Vec3::Y, Vec3::Z, color),
             ]
         );
 

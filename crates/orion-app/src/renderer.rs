@@ -1,16 +1,23 @@
-//! GPU surface, device and the per-frame render, including the egui overlay.
+//! The GPU device, the place frames are drawn to, and the per-frame render, including
+//! the egui interface.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context as _;
 use glam::{Mat4, Vec3};
+use image::RgbaImage;
+use orion_data::tiles::TileCache;
+use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
+use crate::basemap::{BaseMap, BaseMapChoices, BaseMapView};
 use crate::globe::Globe;
 use crate::lines::{Lines, Segment};
 use crate::objects::{Instance, Objects, View};
+use crate::reference::ReferenceLines;
 use crate::stars::Stars;
 
 /// Background colour behind the globe, in linear RGB.
@@ -34,41 +41,76 @@ pub struct Scene<'a> {
     pub camera_position: Vec3,
     /// Unit vector from Earth's centre to the Sun.
     pub sun_direction: Vec3,
-    /// One dot per Tracked Object.
+    /// One dot per Feature on show.
     pub objects: &'a [Instance],
     /// Orbit Paths and Ground Tracks.
     pub lines: &'a [Segment],
     /// How far, in radians, the Earth-fixed frame is turned east of the stars.
     pub sidereal_angle: f32,
+    /// What to show of the Base Map.
+    pub base_map: BaseMapChoices,
+}
+
+/// Where frames are drawn.
+// There is only ever one, so the two kinds differing in size wastes nothing.
+#[expect(clippy::large_enum_variant)]
+enum Target {
+    /// A window on screen, which also supplies the mouse and keyboard.
+    Window {
+        window: Arc<Window>,
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+        input: egui_winit::State,
+    },
+    /// A picture held in memory, for saving to a file. Nothing needs to be on screen,
+    /// so this works when the display is asleep or locked.
+    Picture {
+        texture: wgpu::Texture,
+        started: Instant,
+    },
 }
 
 pub struct Renderer {
-    surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    /// sRGB twin of the surface format. The scene is drawn through a view in this
-    /// format so the GPU encodes its linear colours for display.
+    target: Target,
+    /// sRGB twin of the format frames are stored in, which is not an sRGB format because
+    /// egui blends in gamma space and wants its values stored as they are. The scene is
+    /// drawn through a view in this format so the GPU encodes its linear colours for
+    /// display.
     scene_format: wgpu::TextureFormat,
+    size: PhysicalSize<u32>,
+    /// Pixels per logical point.
+    scale_factor: f64,
     gpu_info: GpuInfo,
 
     globe: Globe,
+    base_map: BaseMap,
+    reference: ReferenceLines,
     stars: Stars,
     lines: Lines,
     objects: Objects,
 
     egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
 }
 
+/// Metal, Vulkan and DirectX 12 only; there is deliberately no OpenGL fallback (ADR 0001).
+const BACKENDS: wgpu::Backends = wgpu::Backends::METAL
+    .union(wgpu::Backends::VULKAN)
+    .union(wgpu::Backends::DX12);
+
 impl Renderer {
-    pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> anyhow::Result<Self> {
+    /// Draws to a window. Base Map tiles are kept in `tile_cache` between runs when
+    /// there is one.
+    pub async fn new(
+        window: Arc<Window>,
+        display: OwnedDisplayHandle,
+        tile_cache: Option<TileCache>,
+    ) -> anyhow::Result<Self> {
         let mut instance_desc =
             wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
-        // Metal, Vulkan and DirectX 12 only; there is deliberately no OpenGL fallback (ADR 0001).
-        instance_desc.backends =
-            wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
+        instance_desc.backends = BACKENDS;
         let instance = wgpu::Instance::new(instance_desc);
 
         let surface = instance
@@ -81,21 +123,14 @@ impl Renderer {
             })
             .await
             .context("no graphics adapter supports Metal, Vulkan or DirectX 12")?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("orion"),
-                ..Default::default()
-            })
-            .await
-            .context("opening the graphics device")?;
+        let (device, queue) = open_device(&adapter).await?;
 
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .context("the graphics adapter cannot draw to this window")?;
-        // egui blends in gamma space and wants a non-sRGB target, while the scene is
-        // lit in linear colour and wants an sRGB one. One surface serves both by
-        // allowing a second view format.
+        // egui wants a non-sRGB target, while the scene is lit in linear colour and
+        // wants an sRGB one. One surface serves both by allowing a second view format.
         config.format =
             egui_wgpu::preferred_framebuffer_format(&surface.get_capabilities(&adapter).formats)
                 .context("no supported surface format")?;
@@ -103,20 +138,8 @@ impl Renderer {
         config.view_formats.push(scene_format);
         surface.configure(&device, &config);
 
-        let globe = Globe::new(&device, &queue, scene_format)?;
-        let stars = Stars::new(&device, scene_format)?;
-        let lines = Lines::new(&device, scene_format);
-        let objects = Objects::new(&device, scene_format);
-
-        let info = adapter.get_info();
-        let gpu_info = GpuInfo {
-            adapter: info.name,
-            backend: format!("{:?}", info.backend),
-        };
-        log::info!("rendering on {} ({})", gpu_info.adapter, gpu_info.backend);
-
         let egui_ctx = egui::Context::default();
-        let egui_state = egui_winit::State::new(
+        let input = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
             &window,
@@ -124,33 +147,148 @@ impl Renderer {
             window.theme(),
             Some(device.limits().max_texture_dimension_2d as usize),
         );
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &device,
-            config.format,
-            egui_wgpu::RendererOptions::default(),
-        );
-
-        Ok(Self {
+        let format = config.format;
+        let scale_factor = window.scale_factor();
+        let target = Target::Window {
+            window,
             surface,
+            config,
+            input,
+        };
+        Self::assemble(
             device,
             queue,
-            config,
+            &adapter,
+            target,
+            format,
+            PhysicalSize::new(size.width.max(1), size.height.max(1)),
+            scale_factor,
+            egui_ctx,
+            tile_cache,
+        )
+    }
+
+    /// Draws to a picture in memory of the given size in pixels, with no window at all.
+    /// Read the result with [`Self::read_picture`].
+    pub async fn offscreen(
+        width: u32,
+        height: u32,
+        scale_factor: f64,
+        tile_cache: Option<TileCache>,
+    ) -> anyhow::Result<Self> {
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_desc.backends = BACKENDS;
+        let instance = wgpu::Instance::new(instance_desc);
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .context("no graphics adapter supports Metal, Vulkan or DirectX 12")?;
+        let (device, queue) = open_device(&adapter).await?;
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("picture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[format.add_srgb_suffix()],
+        });
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_pixels_per_point(scale_factor as f32);
+        let target = Target::Picture {
+            texture,
+            started: Instant::now(),
+        };
+        Self::assemble(
+            device,
+            queue,
+            &adapter,
+            target,
+            format,
+            PhysicalSize::new(width, height),
+            scale_factor,
+            egui_ctx,
+            tile_cache,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn assemble(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        adapter: &wgpu::Adapter,
+        target: Target,
+        format: wgpu::TextureFormat,
+        size: PhysicalSize<u32>,
+        scale_factor: f64,
+        egui_ctx: egui::Context,
+        tile_cache: Option<TileCache>,
+    ) -> anyhow::Result<Self> {
+        let scene_format = format.add_srgb_suffix();
+        let info = adapter.get_info();
+        let gpu_info = GpuInfo {
+            adapter: info.name,
+            backend: format!("{:?}", info.backend),
+        };
+        log::info!("rendering on {} ({})", gpu_info.adapter, gpu_info.backend);
+
+        let globe = Globe::new(&device, &queue, scene_format)?;
+        let base_map = BaseMap::new(&device, scene_format, tile_cache);
+        let reference = ReferenceLines::new(&device, &queue, scene_format)?;
+        let stars = Stars::new(&device, scene_format)?;
+        let lines = Lines::new(&device, scene_format);
+        let objects = Objects::new(&device, scene_format);
+        let egui_renderer =
+            egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
+
+        Ok(Self {
+            device,
+            queue,
+            target,
             scene_format,
+            size,
+            scale_factor,
             gpu_info,
             globe,
+            base_map,
+            reference,
             stars,
             lines,
             objects,
             egui_ctx,
-            egui_state,
             egui_renderer,
         })
     }
 
+    /// Size of the drawing area in pixels.
+    pub fn size(&self) -> PhysicalSize<u32> {
+        self.size
+    }
+
+    /// Pixels per logical point.
+    pub fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
     /// Feeds a window event to the interface. Returns true if the interface used it,
     /// in which case the scene should ignore it.
-    pub fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        self.egui_state.on_window_event(window, event).consumed
+    pub fn on_window_event(&mut self, event: &WindowEvent) -> bool {
+        match &mut self.target {
+            Target::Window { window, input, .. } => {
+                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                    self.scale_factor = *scale_factor;
+                }
+                input.on_window_event(window, event).consumed
+            }
+            Target::Picture { .. } => false,
+        }
     }
 
     /// True if the cursor is over a panel, so the scene beneath should not react to it.
@@ -163,56 +301,77 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        if let Target::Window {
+            surface, config, ..
+        } = &mut self.target
+        {
+            config.width = width;
+            config.height = height;
+            surface.configure(&self.device, config);
+            self.size = PhysicalSize::new(width, height);
+        }
     }
 
     /// Draws one frame: the scene, then the interface built by `build_ui` on top.
-    pub fn render(
-        &mut self,
-        window: &Window,
-        scene: &Scene<'_>,
-        mut build_ui: impl FnMut(&mut egui::Ui, &GpuInfo),
-    ) {
+    pub fn render(&mut self, scene: &Scene<'_>, mut build_ui: impl FnMut(&mut egui::Ui, &GpuInfo)) {
         let mut reconfigure_after_present = false;
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                reconfigure_after_present = true;
-                frame
+        let (surface_frame, interface_view, scene_view) = match &mut self.target {
+            Target::Window {
+                surface, config, ..
+            } => {
+                let frame = match surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+                    wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                        reconfigure_after_present = true;
+                        frame
+                    }
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => return,
+                    wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                        surface.configure(&self.device, config);
+                        return;
+                    }
+                    wgpu::CurrentSurfaceTexture::Validation => {
+                        log::error!("the surface rejected the frame request; skipping this frame");
+                        return;
+                    }
+                };
+                let (interface_view, scene_view) = views(&frame.texture, self.scene_format);
+                (Some(frame), interface_view, scene_view)
             }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                log::error!("the surface rejected the frame request; skipping this frame");
-                return;
+            Target::Picture { texture, .. } => {
+                let (interface_view, scene_view) = views(texture, self.scene_format);
+                (None, interface_view, scene_view)
             }
         };
-        let interface_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let scene_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.scene_format),
-            ..Default::default()
-        });
 
-        self.globe
-            .update(&self.queue, scene.view_projection, scene.sun_direction);
+        let viewport = [self.size.width, self.size.height];
+        let scale_factor = self.scale_factor as f32;
         let view = View {
             view_projection: scene.view_projection,
             camera_position: scene.camera_position,
-            viewport: [self.config.width, self.config.height],
-            scale_factor: window.scale_factor() as f32,
+            viewport,
+            scale_factor,
         };
+        self.globe
+            .update(&self.queue, scene.view_projection, scene.sun_direction);
+        self.base_map.update(
+            &self.device,
+            &self.queue,
+            &BaseMapView {
+                streaming: scene.base_map.imagery,
+                view_projection: scene.view_projection,
+                camera_position: scene.camera_position,
+                sun_direction: scene.sun_direction,
+                viewport,
+            },
+        );
+        self.reference.update(&self.queue, &view, scene.base_map);
         self.stars.update(
             &self.queue,
-            view.view_projection,
-            view.viewport,
-            view.scale_factor,
+            scene.view_projection,
+            viewport,
+            scale_factor,
             scene.sidereal_angle,
         );
         self.lines
@@ -220,17 +379,29 @@ impl Renderer {
         self.objects
             .update(&self.device, &self.queue, &view, scene.objects);
 
-        let raw_input = self.egui_state.take_egui_input(window);
+        let raw_input = match &mut self.target {
+            Target::Window { window, input, .. } => input.take_egui_input(window),
+            // With no window there is no mouse or keyboard: only the size and the time.
+            Target::Picture { started, .. } => egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(viewport[0] as f32, viewport[1] as f32) / scale_factor,
+                )),
+                time: Some(started.elapsed().as_secs_f64()),
+                ..Default::default()
+            },
+        };
         let gpu_info = &self.gpu_info;
         let output = self.egui_ctx.run_ui(raw_input, |ui| build_ui(ui, gpu_info));
-        self.egui_state
-            .handle_platform_output(window, output.platform_output);
+        if let Target::Window { window, input, .. } = &mut self.target {
+            input.handle_platform_output(window, output.platform_output);
+        }
         let paint_jobs = self
             .egui_ctx
             .tessellate(output.shapes, output.pixels_per_point);
         let mut textures_delta = output.textures_delta;
         let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.config.width, self.config.height],
+            size_in_pixels: viewport,
             pixels_per_point: output.pixels_per_point,
         };
 
@@ -272,6 +443,10 @@ impl Renderer {
             // Farthest first: stars, then the globe that covers the ones behind it.
             self.stars.draw(&mut pass);
             self.globe.draw(&mut pass);
+            // Sharper tiles over the bundled picture, wherever they have arrived.
+            self.base_map.draw(&mut pass);
+            // Borders and roads lie on the ground, under everything that flies.
+            self.reference.draw(&mut pass);
             // Lines go under the dots so a dot on a line stays readable.
             self.lines.draw(&mut pass);
             self.objects.draw(&mut pass);
@@ -302,10 +477,103 @@ impl Renderer {
 
         self.queue
             .submit(egui_commands.into_iter().chain([encoder.finish()]));
-        self.queue.present(frame);
-
-        if reconfigure_after_present {
-            self.surface.configure(&self.device, &self.config);
+        if let Some(frame) = surface_frame {
+            self.queue.present(frame);
+        }
+        if let (
+            true,
+            Target::Window {
+                surface, config, ..
+            },
+        ) = (reconfigure_after_present, &self.target)
+        {
+            surface.configure(&self.device, config);
         }
     }
+
+    /// Copies the last frame drawn off the GPU. Only a renderer made with
+    /// [`Self::offscreen`] has a picture to read.
+    pub fn read_picture(&self) -> anyhow::Result<RgbaImage> {
+        let Target::Picture { texture, .. } = &self.target else {
+            anyhow::bail!("this renderer draws to a window, not to a picture");
+        };
+        let (width, height) = (self.size.width, self.size.height);
+        // Rows in the copy must be padded to a multiple of 256 bytes.
+        let row_bytes = width * 4;
+        let padded_row_bytes = row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("picture readback"),
+            size: u64::from(padded_row_bytes) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("picture readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_bytes),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+
+        buffer.map_async(wgpu::MapMode::Read, .., |_| ());
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .context("waiting for the picture to be copied off the GPU")?;
+        let data = buffer
+            .get_mapped_range(..)
+            .context("reading the picture copied off the GPU")?;
+        let mut pixels = Vec::with_capacity((row_bytes * height) as usize);
+        for row in data.chunks(padded_row_bytes as usize) {
+            pixels.extend_from_slice(&row[..row_bytes as usize]);
+        }
+        // The stored bytes are already display-ready sRGB: the scene was encoded on
+        // the way in, and the interface is drawn in gamma space.
+        RgbaImage::from_raw(width, height, pixels).context("the picture has an unexpected size")
+    }
+}
+
+async fn open_device(adapter: &wgpu::Adapter) -> anyhow::Result<(wgpu::Device, wgpu::Queue)> {
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("orion"),
+            ..Default::default()
+        })
+        .await
+        .context("opening the graphics device")
+}
+
+/// Two views of the same texture: one as stored, for the interface, and one through
+/// the sRGB format, for the scene.
+fn views(
+    texture: &wgpu::Texture,
+    scene_format: wgpu::TextureFormat,
+) -> (wgpu::TextureView, wgpu::TextureView) {
+    (
+        texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(scene_format),
+            ..Default::default()
+        }),
+    )
 }

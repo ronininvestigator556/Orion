@@ -18,7 +18,9 @@ pub mod codes;
 pub mod filter;
 pub mod frames;
 pub mod layer;
+pub mod reference;
 pub mod sun;
+pub mod tiles;
 pub mod time;
 
 /// Equatorial radius of Earth in kilometres (WGS 84).

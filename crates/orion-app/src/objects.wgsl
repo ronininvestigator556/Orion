@@ -26,9 +26,18 @@ const SELECTED: u32 = 1u;
 const HOVERED: u32 = 2u;
 const STALE: u32 = 4u;
 
+// Points no farther than this from Earth's centre count as on the ground.
+const GROUND_RADIUS: f32 = 1.0005;
+
 // True if the straight line from the camera to `point` passes through Earth first.
 // The camera is always outside the sphere.
 fn hidden_by_earth(camera: vec3<f32>, point: vec3<f32>) -> bool {
+    let radius_squared = dot(point, point);
+    if radius_squared < GROUND_RADIUS * GROUND_RADIUS {
+        // On the ground the line of sight ends on the sphere itself, where rounding
+        // would decide the test below. Such a point is hidden only over the horizon.
+        return dot(point, camera) < sqrt(radius_squared);
+    }
     // Solve |camera + t * to_point| = 1 for t; a hit with t below 1 is in front of the point.
     let to_point = point - camera;
     let a = dot(to_point, to_point);

@@ -56,6 +56,11 @@ impl Cache {
         &self.dir
     }
 
+    /// Where Base Map tiles are kept, inside this cache folder.
+    pub fn tiles(&self) -> crate::tiles::TileCache {
+        crate::tiles::TileCache::at(self.dir.join("tiles"))
+    }
+
     /// The stored Element Sets, or `None` if there are none or they cannot be read.
     pub fn load(&self) -> Option<Loaded> {
         let fetched_at = self.read_time(FETCHED_AT)?;
