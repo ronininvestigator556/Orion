@@ -99,6 +99,11 @@ pub trait Layer {
 
     /// Applies switches as changed by the user, in the order `toggles` gave them.
     fn set_toggles(&mut self, _toggles: &[Toggle]) {}
+
+    /// True while the Layer is on and still waiting for its first data to arrive.
+    fn is_loading(&self) -> bool {
+        false
+    }
 }
 
 /// Every Layer the app has, and their dots gathered into one list for drawing and picking.
@@ -124,8 +129,6 @@ impl Layers {
     }
 
     /// Adds a Layer after the ones already present.
-    // Nothing but the tests adds a second Layer until the first new one is built.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn add(&mut self, layer: Box<dyn Layer>) {
         self.others.push(layer);
     }
@@ -344,6 +347,7 @@ mod tests {
             Some(FeatureCard {
                 title: self.names.get(index)?.to_string(),
                 sections: vec![vec![CardRow::new("Index", index.to_string())]],
+                details: Vec::new(),
                 notices: Vec::new(),
                 source: "Test".to_owned(),
             })

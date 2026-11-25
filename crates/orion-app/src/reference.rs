@@ -53,7 +53,7 @@ fn is_road(kind: LineKind) -> bool {
 }
 
 /// The point on the unit sphere at a longitude and latitude in degrees.
-fn on_globe([longitude_deg, latitude_deg]: [f64; 2]) -> Vec3 {
+pub fn on_globe([longitude_deg, latitude_deg]: [f64; 2]) -> Vec3 {
     let (sin_lat, cos_lat) = latitude_deg.to_radians().sin_cos();
     let (sin_lon, cos_lon) = longitude_deg.to_radians().sin_cos();
     Vec3::new(
@@ -61,6 +61,26 @@ fn on_globe([longitude_deg, latitude_deg]: [f64; 2]) -> Vec3 {
         (cos_lat * sin_lon) as f32,
         sin_lat as f32,
     )
+}
+
+/// Appends a line along the ground through points given as longitude then latitude in
+/// degrees. Long pieces are drawn as several so they follow the curve of the globe.
+pub fn push_ground_line(segments: &mut Vec<Segment>, points: &[[f64; 2]], color: [f32; 4]) {
+    for pair in points.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        let widest = (to[0] - from[0]).abs().max((to[1] - from[1]).abs());
+        let steps = (widest / MAX_STEP_DEG).ceil().max(1.0) as u32;
+        let at = |step: u32| {
+            let t = f64::from(step) / f64::from(steps);
+            on_globe([
+                from[0] + (to[0] - from[0]) * t,
+                from[1] + (to[1] - from[1]) * t,
+            ])
+        };
+        for step in 0..steps {
+            segments.push(Segment::new(at(step), at(step + 1), color));
+        }
+    }
 }
 
 /// The lines of one kind in one square of the globe.

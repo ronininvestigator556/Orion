@@ -5,6 +5,7 @@
 
 mod basemap;
 mod camera;
+mod feature_layer;
 mod feed;
 mod globe;
 mod layer;
@@ -18,6 +19,7 @@ mod sidebar;
 mod stars;
 mod tracked;
 mod ui;
+mod weather_layers;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -87,14 +89,18 @@ struct Options {
     select: Option<u32>,
     /// Show the Ground Track of the selected object from launch.
     ground_track: bool,
-    /// Text to put in the Find panel's search box at launch.
+    /// Text to put in the search box at launch.
     find: Option<String>,
+    /// Select the first thing the search finds, once something is found.
+    select_found: bool,
     /// Start in Star-Fixed View.
     star_fixed: bool,
     /// Start in Follow Mode, which needs `--select` to have something to follow.
     follow: bool,
     /// Start looking down on this place.
     at: Option<Place>,
+    /// Layers to switch on at launch, each named by the start of its name.
+    layers: Vec<String>,
     /// Draw to this picture file, with no window, and exit.
     snapshot: Option<std::path::PathBuf>,
     /// How long to run before taking the snapshot, in seconds.
@@ -137,8 +143,8 @@ fn parse_place(text: &str) -> Option<Place> {
 }
 
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
-     [--star-fixed] [--find <name or number>] [--at <latitude>,<longitude>[,<km above>]] \
-     [--snapshot <picture file> [--wait <seconds>]]";
+     [--star-fixed] [--find <name or number> [--select-found]] [--at <latitude>,<longitude>[,<km above>]] \
+     [--layers <name>[,<name>...]] [--snapshot <picture file> [--wait <seconds>]]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
     let mut options = Options::default();
@@ -154,6 +160,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                     })?);
             }
             "--ground-track" => options.ground_track = true,
+            "--select-found" => options.select_found = true,
             "--star-fixed" => options.star_fixed = true,
             "--follow" => options.follow = true,
             "--at" => {
@@ -186,6 +193,17 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                         .with_context(|| {
                             format!("{seconds:?} is not a number of seconds\n{USAGE}")
                         })?,
+                );
+            }
+            "--layers" => {
+                let names = arguments
+                    .next()
+                    .with_context(|| format!("--layers needs one or more Layer names\n{USAGE}"))?;
+                options.layers.extend(
+                    names
+                        .split(',')
+                        .map(|name| name.trim().to_lowercase())
+                        .filter(|name| !name.is_empty()),
                 );
             }
             "--find" => {
@@ -228,6 +246,9 @@ struct Session {
     /// The Feature under the cursor.
     hovered: Option<FeatureRef>,
     sidebar: sidebar::Sidebar,
+    /// True until the first search result has been selected, when launched to do so.
+    /// Results can take a while to appear, because Layers fetch in the background.
+    select_found: bool,
     /// What the user has chosen to see of the Base Map.
     base_map: basemap::BaseMapChoices,
     place_names: reference::PlaceNames,
@@ -310,11 +331,32 @@ fn snapshot(options: Options, path: &std::path::Path, wait: Duration) -> anyhow:
 
 impl Session {
     fn new(renderer: Renderer, cache: Option<Cache>, options: Options) -> anyhow::Result<Self> {
+        let layer_cache = cache.clone();
         let mut orbit = OrbitLayer::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
         orbit.set_show_ground_track(options.ground_track);
         let search = options.find.unwrap_or_default();
         orbit.set_search(&search);
-        let layers = Layers::new(orbit);
+        let mut layers = Layers::new(orbit);
+        let fetcher: Arc<dyn orion_data::listing::Fetcher> =
+            Arc::new(orion_data::listing::Http::new());
+        for spec in weather_layers::ALL {
+            layers.add(Box::new(feature_layer::FeatureLayer::new(
+                spec,
+                Arc::clone(&fetcher),
+                layer_cache.clone(),
+            )));
+        }
+        for wanted in &options.layers {
+            let found = (0..layers.len()).find(|index| {
+                layers
+                    .get(*index)
+                    .is_some_and(|layer| layer.name().to_lowercase().starts_with(wanted))
+            });
+            match found.and_then(|index| layers.get_mut(index)) {
+                Some(layer) => layer.set_on(true),
+                None => log::warn!("no Layer has a name starting with {wanted:?}"),
+            }
+        }
 
         let selected = options.select.and_then(|catalogue_number| {
             let key = u64::from(catalogue_number);
@@ -356,6 +398,7 @@ impl Session {
             clock_panel: ui::ClockPanel::default(),
             selected,
             hovered: None,
+            select_found: options.select_found && !search.trim().is_empty(),
             sidebar: sidebar::Sidebar { search },
             base_map: basemap::BaseMapChoices::default(),
             place_names: reference::PlaceNames::bundled(),
@@ -407,6 +450,13 @@ impl Session {
             }
             _ => None,
         };
+
+        if self.select_found
+            && let Some(feature) = self.first_found()
+        {
+            self.select_found = false;
+            self.select_and_face(feature);
+        }
 
         let selected = self.selected.map(|selection| selection.feature);
         self.layers.update(now, real_now, selected, self.hovered);
@@ -583,6 +633,28 @@ impl Session {
     }
 
     /// Selects a Feature and turns the globe to bring it into view.
+    /// The first search result on the last Layer that has one, once every Layer that is
+    /// on has its data. Later Layers are the smaller, more particular ones, so a match
+    /// there is the likelier one meant.
+    fn first_found(&self) -> Option<FeatureRef> {
+        let layers = (0..self.layers.len()).filter_map(|index| self.layers.get(index));
+        if layers.clone().any(|layer| layer.is_loading()) {
+            return None;
+        }
+        (0..self.layers.len()).rev().find_map(|layer| {
+            let found = self
+                .layers
+                .get(layer)
+                .filter(|layer| layer.is_on())?
+                .found(1);
+            let (index, _) = found.first()?;
+            Some(FeatureRef {
+                layer,
+                index: *index,
+            })
+        })
+    }
+
     fn select_and_face(&mut self, feature: FeatureRef) {
         self.select(feature);
         let position = self
@@ -734,13 +806,14 @@ mod tests {
             Options {
                 select: Some(25_544),
                 ground_track: true,
-                find: None,
-                star_fixed: false,
-                follow: false,
-                at: None,
-                snapshot: None,
-                wait_seconds: None,
+                ..Options::default()
             }
+        );
+        assert_eq!(
+            parse(&["--layers", "Earthquakes, fire", "--layers", "u.s."])
+                .unwrap()
+                .layers,
+            ["earthquakes", "fire", "u.s."]
         );
         let picture = parse(&["--snapshot", "out.png", "--wait", "2.5"]).unwrap();
         assert_eq!(

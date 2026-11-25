@@ -57,6 +57,10 @@ const GROUND_RADIUS: f32 = 1.0005;
 /// the test the shaders use, so what can be picked is exactly what is drawn.
 fn hidden_by_earth(camera: Vec3, point: Vec3) -> bool {
     let radius_squared = point.length_squared();
+    if radius_squared < 0.25 {
+        // Deep inside Earth, where dots that are not to be drawn are put.
+        return true;
+    }
     if radius_squared < GROUND_RADIUS * GROUND_RADIUS {
         // On the ground the line of sight ends on the sphere itself, where rounding
         // would decide the test below. Such a point is hidden only over the horizon.

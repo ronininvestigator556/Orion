@@ -2,7 +2,7 @@
 
 A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
 
-**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers on show, with a search box across them; the satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
+**Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling, down to about 25 km above the ground. As you come closer the Base Map sharpens, from imagery streamed from NASA, and gains borders, major roads and place names. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. A sidebar lists the Layers under their Themes, each with a switch, and a search box across the ones that are on. Under Weather there are earthquakes of the past week, fire detections of the past day, tropical storms and U.S. weather alerts; each is fetched only once it is switched on, and its dots can be clicked for details. The satellites Layer can be filtered by kind, Orbit Regime and Group, such as weather satellites or Starlink. The View panel switches between Earth-Fixed View and Star-Fixed View and turns on Follow Mode, and the real naked-eye stars sit behind the globe. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
 ## Download
 
@@ -34,6 +34,12 @@ To start with a search already typed in, use `--find`:
 cargo run -- --find "noaa 2"
 ```
 
+To start with other Layers switched on, list the starts of their names after `--layers`. Adding `--select-found` to `--find` selects the first thing the search finds:
+
+```bash
+cargo run -- --layers earthquakes,fire,tropical,u.s. --find "M 6" --select-found
+```
+
 To start looking down on a place, give `--at` a latitude and longitude in degrees and, optionally, a height in kilometres. This looks at Paris from 200 km up:
 
 ```bash
@@ -58,10 +64,11 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 ## Layout
 
 - `crates/orion-core`: headless orbital maths (propagation, time, coordinate conversion), with no graphics dependencies.
-- `crates/orion-data`: fetching Element Sets and Base Map tiles and caching them on disk, with the rules for how often a source may be asked.
+- `crates/orion-data`: fetching Element Sets, Base Map tiles and the Listings behind other Layers, and caching them on disk, with the rules for how often a Source may be asked.
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`. The borders, roads and place names in its `assets` folder are built from Natural Earth by `cargo run --release --package orion-core --example make_reference`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
 - `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
+- `tools/`: scripts that prepare bundled data. `make_nws_zones.py` builds the table of U.S. forecast zones that weather alerts are placed by.
 - `.github/workflows/`: checks run on every push, and the release build.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.
@@ -71,6 +78,9 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - Earth imagery: NASA Blue Marble Next Generation and NASA Black Marble 2016, courtesy of NASA Earth Observatory. Both are in the public domain.
 - Streamed imagery: Blue Marble and the Landsat WELD composite, provided by NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth Science Data and Information System (ESDIS).
 - Borders, roads and place names: made with [Natural Earth](https://www.naturalearthdata.com), free vector map data in the public domain.
+- Earthquakes: the U.S. Geological Survey's Earthquake Hazards Program.
+- Fire detections: NASA's Fire Information for Resource Management System (FIRMS), part of NASA's Earth Science Data and Information System (ESDIS).
+- Tropical storms: the U.S. National Hurricane Center. Weather alerts and forecast zones: the U.S. National Weather Service. Both are part of NOAA, and their data is in the public domain.
 - Stars: the Yale Bright Star Catalogue, 5th revised edition (Hoffleit and Warren, 1991), which is in the public domain.
 - Orbital data: Element Sets from [CelesTrak](https://celestrak.org), derived from the catalogue published by the U.S. Space Force at Space-Track.org.
 

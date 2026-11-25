@@ -2058,6 +2058,7 @@ dependencies = [
  "directories",
  "log",
  "orion-core",
+ "serde_json",
  "tempfile",
  "ureq",
 ]

@@ -306,6 +306,7 @@ fn card(details: &Details, source: &str) -> FeatureCard {
     FeatureCard {
         title: details.name.clone(),
         sections,
+        details: Vec::new(),
         notices,
         source: source.to_owned(),
     }

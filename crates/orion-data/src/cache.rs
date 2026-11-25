@@ -20,6 +20,8 @@ const FETCHED_AT: &str = "fetched_at";
 const LAST_ATTEMPT: &str = "last_attempt";
 /// CelesTrak's satellite catalogue, as fetched.
 const CATALOGUE: &str = "catalogue.csv";
+/// The folder, inside the cache, holding the files behind Layers other than satellites.
+const LAYERS: &str = "layers";
 /// Holds the time the catalogue was fetched, as seconds since 1970.
 const CATALOGUE_FETCHED_AT: &str = "catalogue_fetched_at";
 
@@ -119,6 +121,23 @@ impl Cache {
             ))
         })?;
         self.write(name, text)
+    }
+
+    /// A Layer's file as last fetched, with when that was, or `None` if there is none.
+    pub fn layer_text(&self, name: &str) -> Option<(String, SystemTime)> {
+        let path = self.dir.join(LAYERS).join(name);
+        let fetched_at = fs::metadata(&path).ok()?.modified().ok()?;
+        Some((fs::read_to_string(path).ok()?, fetched_at))
+    }
+
+    /// Keeps a Layer's file, replacing any earlier copy. The time it is written
+    /// stands as the time it was fetched.
+    pub fn store_layer_text(&self, name: &str, text: &str) -> io::Result<()> {
+        let folder = self.dir.join(LAYERS);
+        fs::create_dir_all(&folder)?;
+        let partial = folder.join(format!("{name}.partial"));
+        fs::write(&partial, text)?;
+        fs::rename(partial, folder.join(name))
     }
 
     /// When a fetch was last attempted, whether or not it succeeded.

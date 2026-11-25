@@ -1,6 +1,6 @@
 [package]
 name = "orion-data"
-description = "Fetching and caching Element Sets for Orion."
+description = "Fetching and caching what Orion shows: Element Sets, Base Map tiles and the Listings behind its Layers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,7 @@ orion-core.workspace = true
 
 directories.workspace = true
 log.workspace = true
+serde_json.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]

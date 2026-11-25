@@ -15,6 +15,7 @@
 pub mod catalogue;
 pub mod clock;
 pub mod codes;
+pub mod feature;
 pub mod filter;
 pub mod frames;
 pub mod layer;

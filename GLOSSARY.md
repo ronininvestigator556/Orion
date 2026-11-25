@@ -30,6 +30,14 @@ _Avoid_: Group, bubble, aggregate, heat map
 Whoever publishes the data behind a Layer, under terms that allow it to be reused.
 _Avoid_: Provider, feed, API
 
+**Listing**:
+A file of Features for one Layer that a Source itself publishes and keeps replacing as things change, fetched by the app as it is.
+_Avoid_: Feed, endpoint, API
+
+**Fire Detection**:
+A hot spot on the ground seen by a satellite's instrument, about a kilometre across. It may be a wildfire, a planned burn, a gas flare or a volcano, so it is never called a fire outright.
+_Avoid_: Wildfire, fire, hotspot
+
 **Extract**:
 A file of Features for one Layer, prepared ahead of time by the project from a Source and downloaded by the app.
 _Avoid_: Dump, export, dataset

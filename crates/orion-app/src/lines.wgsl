@@ -30,6 +30,10 @@ const GROUND_RADIUS: f32 = 1.0005;
 // True if the straight line from the camera to `point` passes through Earth first.
 fn hidden_by_earth(camera: vec3<f32>, point: vec3<f32>) -> bool {
     let radius_squared = dot(point, point);
+    if radius_squared < 0.25 {
+        // Deep inside Earth, where dots that are not to be drawn are put.
+        return true;
+    }
     if radius_squared < GROUND_RADIUS * GROUND_RADIUS {
         // On the ground the line of sight ends on the sphere itself, where rounding
         // would decide the test below. Such a point is hidden only over the horizon.

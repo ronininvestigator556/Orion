@@ -79,6 +79,7 @@ pub fn draw_about(ctx: &egui::Context) {
             ui.label("Orbital data and catalogue: CelesTrak, from the catalogue published by the U.S. Space Force at Space-Track.org.");
             ui.label("Earth imagery: NASA Blue Marble and Black Marble, and a Landsat composite, streamed from NASA's Global Imagery Browse Services.");
             ui.label("Borders, roads and place names: Natural Earth, in the public domain.");
+            ui.label("Earthquakes: U.S. Geological Survey. Fire detections: NASA FIRMS. Tropical storms and weather alerts: NOAA's National Hurricane Center and National Weather Service.");
             ui.label("Stars: the Yale Bright Star Catalogue, 5th revised edition.");
 
             ui.separator();
@@ -314,6 +315,9 @@ fn format_local(moment: JulianDate) -> String {
     }
 }
 
+/// Height, in logical points, left clear below a Feature's card for the View panel.
+const VIEW_PANEL_ROOM: f32 = 340.0;
+
 /// What the user asked for in the information panel this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SelectionActions {
@@ -334,26 +338,43 @@ pub fn draw_selected(
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
         .resizable(false)
         .show(ctx, |ui| {
-            for (number, section) in card.sections.iter().enumerate() {
-                if number > 0 {
-                    ui.separator();
-                }
-                egui::Grid::new(("card section", number))
-                    .num_columns(2)
-                    // Some values are long; wrap them instead of stretching the
-                    // panel across the globe.
-                    .max_col_width(240.0)
-                    .show(ui, |ui| {
-                        for row in section {
-                            ui.label(&row.label);
-                            ui.label(&row.value);
-                            ui.end_row();
+            // A long card scrolls instead of growing down over the View panel.
+            let room = ui.ctx().content_rect().height() - VIEW_PANEL_ROOM;
+            egui::ScrollArea::vertical()
+                .max_height(room.max(160.0))
+                .show(ui, |ui| {
+                    for (number, section) in card.sections.iter().enumerate() {
+                        if number > 0 {
+                            ui.separator();
                         }
-                    });
-            }
-            for notice in &card.notices {
-                ui.colored_label(egui::Color32::from_rgb(255, 190, 90), notice);
-            }
+                        egui::Grid::new(("card section", number))
+                            .num_columns(2)
+                            // Some values are long; wrap them instead of stretching the
+                            // panel across the globe.
+                            .max_col_width(240.0)
+                            .show(ui, |ui| {
+                                for row in section {
+                                    ui.label(&row.label);
+                                    ui.label(&row.value);
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                    // Text can run to several paragraphs; keep it to the width of the rows.
+                    ui.set_max_width(360.0);
+                    if !card.details.is_empty() {
+                        ui.separator();
+                    }
+                    for paragraph in &card.details {
+                        ui.label(paragraph);
+                    }
+                    for notice in &card.notices {
+                        ui.colored_label(egui::Color32::from_rgb(255, 190, 90), notice);
+                    }
+                    if !card.source.is_empty() {
+                        ui.weak(format!("Source: {}", card.source));
+                    }
+                });
 
             ui.separator();
             for toggle in toggles.iter_mut() {

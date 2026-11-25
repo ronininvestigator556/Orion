@@ -76,6 +76,36 @@ impl JulianDate {
         valid.then(|| Self::from_utc(year, month, day, hour, minute, second as f64))
     }
 
+    /// Reads a moment written the way most services publish them, such as
+    /// `2026-11-25T05:14:00-05:00` or `2026-11-25T10:14:00.5Z`: a date, a `T`, a time
+    /// with optional fractions of a second, then `Z` or an offset from UTC.
+    pub fn parse_rfc3339(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let (date_and_time, offset_minutes) = if let Some(rest) = text.strip_suffix(['Z', 'z']) {
+            (rest, 0.0)
+        } else {
+            // The offset's sign is the last + or - in the text, after the date's own dashes.
+            let sign_at = text.rfind(['+', '-']).filter(|at| *at > 10)?;
+            let (hours, minutes) = text[sign_at + 1..].split_once(':')?;
+            let size = hours.parse::<f64>().ok()? * 60.0 + minutes.parse::<f64>().ok()?;
+            let sign = if text[sign_at..].starts_with('-') {
+                -1.0
+            } else {
+                1.0
+            };
+            (&text[..sign_at], sign * size)
+        };
+        // Fractions of a second are read apart, because `parse_utc` takes whole seconds.
+        let (whole, fraction) = match date_and_time.split_once('.') {
+            Some((whole, fraction)) => (whole, format!("0.{fraction}").parse::<f64>().ok()?),
+            None => (date_and_time, 0.0),
+        };
+        let local = Self::parse_utc(whole)?;
+        Some(Self(
+            local.0 + (fraction - offset_minutes * 60.0) / 86_400.0,
+        ))
+    }
+
     /// The Gregorian calendar date and time of day of this moment, in UTC.
     pub fn to_utc(self) -> CalendarTime {
         // Shift by half a day so whole numbers fall at midnight, then split.
@@ -211,5 +241,30 @@ mod tests {
         // 20 August 1992, 12:14 UT1 gives 152.578787810 degrees.
         let angle = JulianDate::from_utc(1992, 8, 20, 12, 14, 0.0).greenwich_sidereal_angle();
         assert!((angle.to_degrees() - 152.578_787_810).abs() < 1e-4);
+    }
+
+    #[test]
+    fn moments_with_offsets_are_read_as_utc() {
+        let expected = JulianDate::from_utc(2026, 11, 25, 10, 14, 0.0);
+        let close = |text: &str, expected: JulianDate| {
+            let read = JulianDate::parse_rfc3339(text).unwrap_or_else(|| panic!("{text}"));
+            assert!((read.0 - expected.0).abs() < 1e-8, "{text}");
+        };
+        close("2026-11-25T10:14:00Z", expected);
+        close("2026-11-25T05:14:00-05:00", expected);
+        close("2026-11-25T15:44:00+05:30", expected);
+        close(
+            "2026-11-25T10:14:00.500Z",
+            JulianDate::from_utc(2026, 11, 25, 10, 14, 0.5),
+        );
+        for bad in [
+            "",
+            "2026-11-25",
+            "2026-11-25T10:14:00",
+            "yesterday",
+            "2026-13-01T00:00:00Z",
+        ] {
+            assert_eq!(JulianDate::parse_rfc3339(bad), None, "{bad}");
+        }
     }
 }

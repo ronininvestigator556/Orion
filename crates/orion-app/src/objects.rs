@@ -13,7 +13,7 @@ const DOT_RADIUS_POINTS: f32 = 1.5;
 pub struct Instance {
     /// Position in Earth radii in the Earth-fixed frame.
     position: [f32; 3],
-    /// The `Marks`, as bit flags.
+    /// The `Marks`, as bit flags, and above them the dot's size.
     marks: u32,
     /// Linear colour with alpha, each from 0 to 255.
     color: [u8; 4],
@@ -32,6 +32,9 @@ pub struct Marks {
 const SELECTED: u32 = 1;
 const HOVERED: u32 = 2;
 const STALE: u32 = 4;
+/// Where the size sits in `marks`: eight bits holding sixteenths of the usual radius,
+/// with zero standing for the usual radius itself.
+const SIZE_SHIFT: u32 = 8;
 
 impl Instance {
     /// An instance that draws nothing. It sits at Earth's centre, where the shader's
@@ -51,6 +54,13 @@ impl Instance {
                 | flag(marks.stale, STALE),
             color,
         }
+    }
+
+    /// The same dot drawn `scale` times the usual size, up to about sixteen times.
+    pub fn scaled(mut self, scale: f32) -> Self {
+        let sixteenths = (scale * 16.0).round().clamp(1.0, 255.0) as u32;
+        self.marks = (self.marks & !(0xFF << SIZE_SHIFT)) | (sixteenths << SIZE_SHIFT);
+        self
     }
 
     /// Position in Earth radii in the Earth-fixed frame.

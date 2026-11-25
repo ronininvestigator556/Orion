@@ -33,6 +33,10 @@ const GROUND_RADIUS: f32 = 1.0005;
 // The camera is always outside the sphere.
 fn hidden_by_earth(camera: vec3<f32>, point: vec3<f32>) -> bool {
     let radius_squared = dot(point, point);
+    if radius_squared < 0.25 {
+        // Deep inside Earth, where dots that are not to be drawn are put.
+        return true;
+    }
     if radius_squared < GROUND_RADIUS * GROUND_RADIUS {
         // On the ground the line of sight ends on the sphere itself, where rounding
         // would decide the test below. Such a point is hidden only over the horizon.
@@ -65,6 +69,11 @@ fn vs_main(
     out.selected = 0u;
 
     var radius = uniforms.dot_radius;
+    // Eight bits above the flags hold the dot's size in sixteenths of the usual one.
+    let sixteenths = (marks >> 8u) & 0xFFu;
+    if sixteenths != 0u {
+        radius *= f32(sixteenths) / 16.0;
+    }
     if (marks & STALE) != 0u {
         // The Position is unreliable, so the dot is faint.
         out.color.a *= 0.3;
@@ -74,7 +83,8 @@ fn vs_main(
         out.color = vec4<f32>(mix(out.color.rgb, vec3<f32>(1.0), 0.5), 1.0);
     }
     if (marks & SELECTED) != 0u {
-        radius *= 4.0;
+        // A ring wide enough to see, and wider still round a dot that is already large.
+        radius = max(radius * 1.6, uniforms.dot_radius * 4.0);
         out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
         out.selected = 1u;
     }

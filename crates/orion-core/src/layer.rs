@@ -90,6 +90,8 @@ pub struct FeatureCard {
     pub title: String,
     /// Groups of related rows, shown with a divider between them.
     pub sections: Vec<Vec<CardRow>>,
+    /// Longer text about the Feature, a paragraph at a time.
+    pub details: Vec<String>,
     /// Things the reader should be warned about, such as stale data.
     pub notices: Vec<String>,
     /// Who published the information.

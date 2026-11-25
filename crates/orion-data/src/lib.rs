@@ -5,10 +5,12 @@
 //! and enforces how often a Source may be asked.
 
 mod cache;
+pub mod listing;
 mod source;
 #[cfg(test)]
 mod test_support;
 pub mod tiles;
+pub mod weather;
 
 use std::fmt;
 use std::io;
