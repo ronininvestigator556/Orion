@@ -1,13 +1,51 @@
 # Orion
 
-A desktop app that shows every publicly catalogued object orbiting Earth on a 3D globe, at its computed position for any chosen moment.
+A desktop app that shows publicly available information about the world on a 3D globe, in Layers that can be switched on and off: what is in orbit, and places, traffic and weather on and above the surface. It shows places and vehicles as their sources publish them, and is not a tool for following individuals.
 
 ## Language
+
+### What is on the globe
+
+**Layer**:
+One kind of thing from one kind of source, shown or hidden as a whole, with its own colour, legend and filter.
+_Avoid_: Overlay, dataset, category
+
+**Theme**:
+A heading under which related Layers are listed: Orbit, Places, Energy, Traffic, Weather or Imported.
+_Avoid_: Group, category, folder, section
+
+**Feature**:
+One thing shown on a Layer: a fixed place such as a mine, a route such as a pipeline, or something moving such as a ship. A Tracked Object is a Feature of the orbit Layer.
+_Avoid_: Entity, item, marker, point of interest
+
+**Base Map**:
+The picture of Earth's surface drawn beneath every Layer, which sharpens as the view moves closer.
+_Avoid_: Background, tiles, imagery layer
+
+**Cluster**:
+A single mark standing for many nearby Features of one Layer, showing how many, used when the view is too far out to tell them apart.
+_Avoid_: Group, bubble, aggregate, heat map
+
+**Source**:
+Whoever publishes the data behind a Layer, under terms that allow it to be reused.
+_Avoid_: Provider, feed, API
+
+**Extract**:
+A file of Features for one Layer, prepared ahead of time by the project from a Source and downloaded by the app.
+_Avoid_: Dump, export, dataset
+
+**Imported Layer**:
+A Layer made from a file of places that the user opens, as opposed to one that comes with the app.
+_Avoid_: Custom layer, user layer, overlay
+
+**Time Coverage**:
+The moments a Layer is able to show: any moment, only the present, or the present and some of the past.
+_Avoid_: Time range, availability, history
 
 ### What is in orbit
 
 **Tracked Object**:
-Anything in orbit that appears in the Catalogue: a Satellite, a Rocket Body or Debris.
+Anything in orbit that appears in the Catalogue: a Satellite, a Rocket Body or Debris. The word is reserved for orbit; an aircraft or ship is a Feature, not a Tracked Object.
 _Avoid_: Satellite (as the general word), space object, sat
 
 **Satellite**:
@@ -31,7 +69,7 @@ The Catalogue's lasting facts about one Tracked Object: its owner, launch date a
 _Avoid_: Metadata, SATCAT entry, catalogue entry
 
 **Group**:
-A named set of Tracked Objects that share a purpose or belong to one constellation, such as weather Satellites or Starlink.
+A named set of Tracked Objects that share a purpose or belong to one constellation, such as weather Satellites or Starlink. Not a set of Layers; that is a Theme.
 _Avoid_: Category, collection, constellation (as the general word)
 
 ### Where things are
