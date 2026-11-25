@@ -1,5 +1,8 @@
 //! Orion desktop app: window, event loop and frame pacing.
 
+// A released Windows build is a windowed app and should not open a console beside it.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod camera;
 mod feed;
 mod globe;

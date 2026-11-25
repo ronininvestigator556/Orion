@@ -4,7 +4,15 @@ A desktop app that shows every publicly catalogued object orbiting Earth on a 3D
 
 **Status:** early. The app draws a textured globe with a live day/night terminator, which you can turn by dragging and zoom by scrolling. About 29,000 Tracked Objects are drawn at their current Positions. Click one to see its details, including its owner and where and when it was launched, with its Orbit Path and optionally its Ground Track. The Find panel searches by name or catalogue number and filters by kind, Orbit Regime and Group, such as weather satellites or Starlink. A Simulation Clock lets you pause, speed up, reverse or jump the displayed moment within two weeks of now. Element Sets are fetched from CelesTrak when the ones on hand are more than six hours old, kept in a cache on disk, and fall back to a Snapshot bundled with the app when there is no connection.
 
-## Run it
+## Download
+
+Each release on GitHub has a download for macOS, Windows and Linux. They are not signed, so your system will warn you the first time you open one.
+
+- **macOS** (Apple silicon and Intel): unzip, move `Orion.app` to Applications and open it. When macOS refuses, go to System Settings, then Privacy & Security, and choose "Open Anyway".
+- **Windows** (64-bit): unzip and run `orion.exe`. If SmartScreen appears, choose "More info", then "Run anyway".
+- **Linux** (64-bit): extract the archive and run `./orion`. It needs a desktop with Vulkan graphics drivers.
+
+## Build and run from source
 
 Requires a recent stable Rust toolchain (1.95 or newer) and a GPU with Metal, Vulkan or DirectX 12.
 
@@ -24,11 +32,20 @@ To start with a search already typed in, use `--find`:
 cargo run -- --find "noaa 2"
 ```
 
+## Releasing
+
+1. Set `version` under `[workspace.package]` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and commit.
+2. Tag that commit `v` plus the version, such as `v0.1.0`, and push the tag.
+
+The Release workflow then builds each platform's download and publishes them as a GitHub Release. It stops if the tag and the version disagree. The macOS download is made by `packaging/macos/bundle.sh`, which can also be run by hand.
+
 ## Layout
 
 - `crates/orion-core`: headless orbital maths (propagation, time, coordinate conversion), with no graphics dependencies.
 - `crates/orion-data`: fetching Element Sets and caching them on disk, with the rules for how often a source may be asked.
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`.
+- `packaging/`: what turns a compiled binary into each platform's download.
+- `.github/workflows/`: checks run on every push, and the release build.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.
 

@@ -42,3 +42,8 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# What downloads are built with: smaller and a little faster, at the cost of build time.
+[profile.release]
+lto = "thin"
+strip = true

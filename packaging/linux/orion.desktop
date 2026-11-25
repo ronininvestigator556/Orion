@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Orion
+Comment=See every publicly catalogued object orbiting Earth on a 3D globe
+Exec=orion
+Terminal=false
+Categories=Education;Science;Astronomy;

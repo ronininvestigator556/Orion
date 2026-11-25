@@ -1,0 +1,106 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds a download for each platform and publishes
+# them as a GitHub Release. The tag must match the version in Cargo.toml.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build for ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # An Apple silicon machine, which also cross-compiles the Intel half.
+          - platform: macos
+            os: macos-latest
+          - platform: windows
+            os: windows-latest
+          # An older Ubuntu, so the binary also runs on distributions with an older C library.
+          - platform: linux
+            os: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read the version from the tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^version = \"$version\"$" Cargo.toml; then
+            echo "Tag $GITHUB_REF_NAME does not match the version in Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package for macOS
+        if: matrix.platform == 'macos'
+        run: |
+          cargo build --release --locked --package orion-app --target aarch64-apple-darwin
+          cargo build --release --locked --package orion-app --target x86_64-apple-darwin
+          lipo -create -output target/orion-universal \
+            target/aarch64-apple-darwin/release/orion \
+            target/x86_64-apple-darwin/release/orion
+          packaging/macos/bundle.sh target/orion-universal "${{ steps.version.outputs.version }}" dist
+
+      - name: Build and package for Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cargo build --release --locked --package orion-app
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive `
+            -Path target/release/orion.exe, README.md, LICENSE-MIT, LICENSE-APACHE `
+            -DestinationPath "dist/Orion-${{ steps.version.outputs.version }}-windows-x86_64.zip"
+
+      - name: Build and package for Linux
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libwayland-dev libxkbcommon-dev
+          cargo build --release --locked --package orion-app
+          name="orion-${{ steps.version.outputs.version }}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/orion packaging/linux/orion.desktop README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          tar --create --gzip --file "dist/$name.tar.gz" --directory dist "$name"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: orion-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Orion ${GITHUB_REF_NAME#v}" \
+            --generate-notes
