@@ -15,6 +15,7 @@ mod source;
 mod test_support;
 pub mod tiles;
 pub mod traffic;
+pub mod unrest;
 
 use std::fmt;
 use std::io;

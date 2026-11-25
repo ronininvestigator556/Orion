@@ -1,0 +1,46 @@
+name: Unrest Reports
+
+# Sifts GDELT's index of the news into the small file of Unrest Reports that every
+# copy of Orion downloads, and publishes it beside the Extracts (ADR 0004). GDELT
+# puts out new files every quarter of an hour; once an hour is often enough for
+# reports that are hours behind the events anyway.
+
+on:
+  schedule:
+    # Seven minutes past, when fewer scheduled jobs are queueing than on the hour.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+# A run that starts before the last has finished would read the same memory and
+# overwrite what the other learned.
+concurrency:
+  group: unrest
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sift:
+    name: Sift and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      # The job's memory of what it has seen is kept on the release between runs.
+      # The first run has none and starts from the past three days.
+      - name: Fetch what the last run remembered
+        run: |
+          mkdir -p unrest
+          gh release download extracts --pattern unrest_seen.tsv --dir unrest || echo "No memory yet."
+      - name: Sift the news since then
+        run: python3 tools/make_unrest.py unrest
+      - name: Publish
+        run: |
+          if ! gh release view extracts >/dev/null 2>&1; then
+            gh release create extracts --latest=false --title "Extracts" \
+              --notes "Files of places that Orion downloads, rebuilt on a schedule. This is not a version of the app: for that, see the other releases."
+          fi
+          gh release upload extracts unrest/unrest.tsv unrest/unrest_seen.tsv --clobber

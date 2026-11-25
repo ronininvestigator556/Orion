@@ -39,6 +39,7 @@ pub static AIRPORTS: Spec = Spec {
     attribution: "",
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Cameras that read licence plates. A fixed piece of equipment at a mapped place;
@@ -60,6 +61,7 @@ pub static CAMERAS: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 pub static DATA_CENTRES: Spec = Spec {
@@ -74,6 +76,7 @@ pub static DATA_CENTRES: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 pub static MILITARY_SITES: Spec = Spec {
@@ -92,6 +95,7 @@ pub static MILITARY_SITES: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Every Layer in this module, in the order they are listed.

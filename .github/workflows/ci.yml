@@ -24,6 +24,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # The scripts that prepare data have tests of their own.
+  tools:
+    name: Data tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -m unittest discover tools
+
   # Fails if a dependency arrives under a licence that about.toml does not list.
   licences:
     name: Third-party licences

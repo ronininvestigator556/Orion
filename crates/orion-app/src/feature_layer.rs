@@ -39,6 +39,10 @@ const CLUSTER_ABOVE: usize = 200;
 const ROUTE_OPACITY: f32 = 0.85;
 /// Colour of the outline drawn for the selected Feature.
 const OUTLINE: [f32; 4] = [1.0, 1.0, 1.0, 0.9];
+/// How many straight pieces a ring is drawn with.
+const RING_SIDES: usize = 40;
+const RING_OPACITY: f32 = 0.8;
+const EARTH_RADIUS_KM: f64 = 6_371.0;
 /// The most letters of a Feature's name used as the title of its card.
 const TITLE_LETTERS: usize = 48;
 
@@ -104,11 +108,36 @@ pub struct Spec {
     pub cluster: bool,
     /// Whether a Feature that has a line is drawn as it, and not as a dot.
     pub routes: bool,
+    /// How wide a ring is drawn round each Feature's dot, in kilometres, for Layers
+    /// whose Features are placed no more exactly than that; zero for no ring.
+    pub ring_km: f64,
 }
 
 /// Converts a screen colour to the linear colour the dot shader works in.
 fn linear(color: [u8; 3]) -> [u8; 3] {
     color.map(|channel| ((f32::from(channel) / 255.0).powf(2.2) * 255.0).round() as u8)
+}
+
+/// Appends a ring on the ground `radius_km` from a Feature, all the way round it.
+fn push_ring(out: &mut Vec<Segment>, feature: &Feature, radius_km: f64, color: [f32; 4]) {
+    let reach = radius_km / EARTH_RADIUS_KM;
+    let (latitude, longitude) = (
+        feature.latitude_deg.to_radians(),
+        feature.longitude_deg.to_radians(),
+    );
+    // The place `reach` away from the Feature in each direction of the compass.
+    let corner = |side: usize| {
+        let bearing = std::f64::consts::TAU * side as f64 / RING_SIDES as f64;
+        let ring_latitude =
+            (latitude.sin() * reach.cos() + latitude.cos() * reach.sin() * bearing.cos()).asin();
+        let ring_longitude = longitude
+            + (bearing.sin() * reach.sin() * latitude.cos())
+                .atan2(reach.cos() - latitude.sin() * ring_latitude.sin());
+        on_globe([ring_longitude.to_degrees(), ring_latitude.to_degrees()])
+    };
+    for side in 0..RING_SIDES {
+        out.push(Segment::new(corner(side), corner(side + 1), color));
+    }
 }
 
 /// The colours Imported Layers take in turn, as written for the screen.
@@ -248,6 +277,7 @@ impl FeatureLayer {
             attribution: "",
             cluster: true,
             routes: true,
+            ring_km: 0.0,
         }));
         let mut layer = Self::new(spec, Arc::new(NoFetcher), None);
         layer.imported_from = Some(file_name.to_owned());
@@ -686,12 +716,26 @@ impl Layer for FeatureLayer {
         &self.dots
     }
 
-    fn lines(&self, selected: Option<usize>, _at: JulianDate, out: &mut Vec<Segment>) {
-        let Some(feature) = selected.and_then(|index| self.features.get(index)) else {
-            return;
-        };
-        for line in &feature.shape {
-            push_ground_line(out, line, OUTLINE);
+    fn lines(&self, selected: Option<usize>, at: JulianDate, out: &mut Vec<Segment>) {
+        if self.spec.ring_km > 0.0 {
+            for (feature, listed) in self.features.iter().zip(&self.listed) {
+                let (true, Some(opacity)) = (*listed, self.opacity(feature, at)) else {
+                    continue;
+                };
+                let [red, green, blue] = self
+                    .spec
+                    .classes
+                    .get(usize::from(feature.class))
+                    .map_or([255; 3], |class| linear(class.color))
+                    .map(|channel| f32::from(channel) / 255.0);
+                let color = [red, green, blue, RING_OPACITY * opacity];
+                push_ring(out, feature, self.spec.ring_km, color);
+            }
+        }
+        if let Some(feature) = selected.and_then(|index| self.features.get(index)) {
+            for line in &feature.shape {
+                push_ground_line(out, line, OUTLINE);
+            }
         }
     }
 
@@ -882,6 +926,7 @@ mod tests {
         attribution: "",
         cluster: false,
         routes: false,
+        ring_km: 0.0,
     };
 
     /// The test events again as routes: each has a line a degree long at the equator.
@@ -900,7 +945,60 @@ mod tests {
         attribution: "",
         cluster: false,
         routes: true,
+        ring_km: 0.0,
     };
+
+    #[test]
+    fn a_layer_of_loosely_placed_features_rings_each_one_on_show() {
+        static RINGS: Spec = Spec {
+            name: "Test rings",
+            theme: Theme::Unrest,
+            listing: SPEC.listing,
+            classes: &[
+                Class::new("Big", [255, 0, 0]),
+                Class::hidden("Small", [255, 255, 0]),
+            ],
+            coverage: TimeCoverage::PresentAndPast { days: 7.0 },
+            show: Show::Recent { days: 2.0 },
+            dot_scale: |_| 1.0,
+            note: "",
+            attribution: "",
+            cluster: false,
+            routes: false,
+            ring_km: 10.0,
+        };
+        // One on show, one from too long ago, and one of a class that is hidden.
+        let stub = Stub::answering(vec![Ok(
+            "Near,0,0.5,10.0,20.0\nOld,0,-5.0,30.0,40.0\nSmall,1,0.5,50.0,60.0",
+        )]);
+        let mut layer = FeatureLayer::new(&RINGS, stub as Arc<dyn Fetcher>, None);
+        layer.set_on(true);
+        settle(&mut layer, SystemTime::now());
+        let at = JulianDate(start().0 + 1.0);
+
+        let mut lines = Vec::new();
+        layer.lines(None, at, &mut lines);
+        assert_eq!(lines.len(), RING_SIDES);
+        // Every piece of the ring is ten kilometres from the place, and it closes.
+        let centre = on_globe([20.0, 10.0]);
+        for segment in &lines {
+            let (from, to) = segment.ends();
+            for end in [from, to] {
+                let km = f64::from((end - centre).length()) * EARTH_RADIUS_KM;
+                assert!((km - 10.0).abs() < 0.1, "{km} km");
+            }
+        }
+        assert_eq!(lines[0].ends().0, lines[RING_SIDES - 1].ends().1);
+
+        // A Layer with no ring draws none.
+        let stub = Stub::answering(vec![Ok("Near,0,0.5,10.0,20.0")]);
+        let mut plain = layer_from(&stub);
+        plain.set_on(true);
+        settle(&mut plain, SystemTime::now());
+        let mut none = Vec::new();
+        plain.lines(None, at, &mut none);
+        assert_eq!(none, Vec::new());
+    }
 
     #[test]
     fn an_extract_that_is_not_published_yet_says_so() {
@@ -919,6 +1017,7 @@ mod tests {
             attribution: "",
             cluster: false,
             routes: false,
+            ring_km: 0.0,
         };
         let stub = Stub::answering(vec![Err(FetchError::Refused(404))]);
         let mut layer = FeatureLayer::new(&EXTRACT, stub as Arc<dyn Fetcher>, None);
@@ -1045,6 +1144,7 @@ mod tests {
         attribution: "Test credit",
         cluster: true,
         routes: false,
+        ring_km: 0.0,
     };
 
     /// Three hundred places: a tight knot of 250 near Paris, 49 strung along the

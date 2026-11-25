@@ -90,6 +90,16 @@ python3 tools/make_extracts.py extracts
 
 Copying a file from there into the `layers` folder inside Orion's cache folder makes the app use it for a week without fetching.
 
+## On trial
+
+Starting Orion with `--experimental` lists Layers that are still being judged and are not part of a release:
+
+```bash
+cargo run -- --experimental
+```
+
+- **Protests and unrest**, under the Unrest Theme. Unrest Reports are protests, protests with violence and strikes as the news reported them, by town, for the past three days. The Unrest Reports workflow sifts them every hour from the GDELT Project's index of the world's news by running `tools/make_unrest.py`, and publishes one small file beside the Extracts. GDELT reads the news by machine and is often wrong, so the job keeps only what an article's own address says is about a protest, and Orion shows by default only what at least two news outlets carried. A report never says where a crowd is now, or what is planned.
+
 ## Releasing
 
 1. Set `version` under `[workspace.package]` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows, and commit.
@@ -106,7 +116,7 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`. The borders, roads and place names in its `assets` folder are built from Natural Earth by `cargo run --release --package orion-core --example make_reference`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
 - `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
-- `tools/`: scripts that prepare data. `make_extracts.py` builds the Extracts from OpenStreetMap, and `make_nws_zones.py` the bundled table of U.S. forecast zones that weather alerts are placed by.
+- `tools/`: scripts that prepare data. `make_extracts.py` builds the Extracts from OpenStreetMap, `make_unrest.py` sifts the news into Unrest Reports, and `make_nws_zones.py` builds the bundled table of U.S. forecast zones that weather alerts are placed by.
 - `.github/workflows/`: checks run on every push, the release build, and the weekly Extracts.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.

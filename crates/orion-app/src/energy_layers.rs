@@ -40,6 +40,7 @@ pub static POWER_PLANTS: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Mines and quarries whose product is recorded. Stone, sand and gravel pits far
@@ -66,6 +67,7 @@ pub static MINES: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 pub static OIL_AND_GAS_SITES: Spec = Spec {
@@ -83,6 +85,7 @@ pub static OIL_AND_GAS_SITES: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Oil and gas platforms at sea.
@@ -98,6 +101,7 @@ pub static OFFSHORE_PLATFORMS: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Oil, gas and fuel pipelines, drawn as their routes.
@@ -118,6 +122,7 @@ pub static PIPELINES: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: false,
     routes: true,
+    ring_km: 0.0,
 };
 
 pub static DAMS: Spec = Spec {
@@ -133,6 +138,7 @@ pub static DAMS: Spec = Spec {
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Every Layer in this module, in the order they are listed.

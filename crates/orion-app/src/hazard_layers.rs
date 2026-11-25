@@ -29,6 +29,7 @@ pub static EARTHQUAKES: Spec = Spec {
     attribution: "",
     cluster: false,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Hot spots seen from orbit in the past day.
@@ -49,6 +50,7 @@ pub static FIRE_DETECTIONS: Spec = Spec {
     attribution: "",
     cluster: false,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Tropical storms being tracked now.
@@ -69,6 +71,7 @@ pub static STORMS: Spec = Spec {
     attribution: "",
     cluster: false,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Weather alerts in force in the United States.
@@ -90,6 +93,7 @@ pub static ALERTS: Spec = Spec {
     attribution: "",
     cluster: false,
     routes: false,
+    ring_km: 0.0,
 };
 
 /// Every Layer in this module, in the order they are listed.
