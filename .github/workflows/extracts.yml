@@ -21,7 +21,8 @@ jobs:
   build:
     name: Build and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Every query can be made to wait and be retried, so allow for a slow morning.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
       - name: Build the Extracts
@@ -29,10 +30,17 @@ jobs:
           # Tells the operators of OpenStreetMap's query service who is asking.
           ORION_EXTRACTS_CONTACT: ${{ github.server_url }}/${{ github.repository }}
         run: python3 tools/make_extracts.py extracts
+      # Whatever was built is published even if some Extract failed: the run still
+      # ends in failure, so it is noticed, and the failed one keeps its old copy.
       - name: Publish them
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ! ls extracts/*.tsv >/dev/null 2>&1; then
+            echo "No Extract was built."
+            exit 1
+          fi
           if ! gh release view extracts >/dev/null 2>&1; then
             gh release create extracts --latest=false --title "Extracts" \
               --notes "Files of places that Orion downloads, rebuilt every week from OpenStreetMap. © OpenStreetMap contributors, under the Open Database Licence. This is not a version of the app: for that, see the other releases."

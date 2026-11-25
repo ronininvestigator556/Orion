@@ -12,8 +12,10 @@ Run with Python 3 and nothing else installed:
 
     python3 tools/make_extracts.py <folder to write to> [layer ...]
 
-With no layer named, every Extract is built. Set ORION_EXTRACTS_CONTACT to an address
-or page where the query service's operators can reach whoever runs the job.
+With no layer named, every Extract is built. An Extract that cannot be built is
+reported and the rest are still built; the script then ends with an error. Set
+ORION_EXTRACTS_CONTACT to an address or page where the query services' operators can
+reach whoever runs the job.
 
 Each Extract is a text file of tab-separated lines. The first names the format, its
 version, the layer, the day it was built and how many places follow. Every other
@@ -34,13 +36,24 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# The public query service. ORION_OVERPASS_ENDPOINT names another to use instead.
-ENDPOINT = os.environ.get("ORION_OVERPASS_ENDPOINT", "https://overpass-api.de/api/interpreter")
-# The service is often busy. A query it turns away is tried again after each of these
-# waits, in seconds, before the run gives up.
+# Public query services, tried in turn. ORION_OVERPASS_ENDPOINT names others to use
+# instead, separated by commas. The first is the main one; it is often at capacity,
+# and the second, run by VK Maps, has answered when it was.
+ENDPOINTS = [
+    address.strip()
+    for address in os.environ.get(
+        "ORION_OVERPASS_ENDPOINT",
+        "https://overpass-api.de/api/interpreter,"
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ).split(",")
+    if address.strip()
+]
+# A query every service turns away is tried again after each of these waits, in
+# seconds, before the Extract is given up on.
 RETRY_WAITS = (60, 120, 240, 480)
-# Seconds the query service may spend on one query, and that this script waits for it.
-QUERY_SECONDS = 900
+# Seconds a query service may spend on one query. This script waits a minute longer
+# than that before taking a service that has gone quiet for one that will not answer.
+QUERY_SECONDS = 300
 # A pause between queries, out of courtesy to a free public service.
 PAUSE_SECONDS = 20
 
@@ -319,23 +332,27 @@ def query(selection, with_lines=False):
     text = f"[out:json][timeout:{QUERY_SECONDS}];({selection});out {shape} tags qt;"
     contact = os.environ.get("ORION_EXTRACTS_CONTACT", "").strip()
     agent = "orion-extracts/1" + (f" ({contact})" if contact else "")
-    request = urllib.request.Request(
-        ENDPOINT,
-        data=urllib.parse.urlencode({"data": text}).encode(),
-        headers={"User-Agent": agent},
-    )
+    document = None
     for wait in (*RETRY_WAITS, None):
-        try:
-            with urllib.request.urlopen(request, timeout=QUERY_SECONDS + 60) as response:
-                document = json.load(response)
+        for endpoint in ENDPOINTS:
+            request = urllib.request.Request(
+                endpoint,
+                data=urllib.parse.urlencode({"data": text}).encode(),
+                headers={"User-Agent": agent},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=QUERY_SECONDS + 60) as response:
+                    document = json.load(response)
+                break
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+                host = urllib.parse.urlsplit(endpoint).netloc
+                print(f"{host} did not answer ({error})", flush=True)
+        if document is not None:
             break
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-            # A refusal that waiting will not cure is not worth asking about again.
-            busy = getattr(error, "code", 503) in (429, 502, 503, 504)
-            if wait is None or not busy:
-                raise
-            print(f"the query service is busy ({error}); trying again in {wait} s", flush=True)
-            time.sleep(wait)
+        if wait is None:
+            raise RuntimeError("no query service answered")
+        print(f"trying again in {wait} s", flush=True)
+        time.sleep(wait)
     if "remark" in document and not document.get("elements"):
         raise RuntimeError(document["remark"])
     return document["elements"]
@@ -385,10 +402,19 @@ def main():
     unknown = [layer for layer in layers if layer not in EXTRACTS]
     if unknown:
         sys.exit(f"no such Extract: {', '.join(unknown)}; there are {', '.join(EXTRACTS)}")
+    failed = []
     for number, layer in enumerate(layers):
         if number:
             time.sleep(PAUSE_SECONDS)
-        build(layer, folder)
+        # One Extract failing must not cost the others: the ones built are still
+        # worth publishing, and the old copy of the failed one stays in place.
+        try:
+            build(layer, folder)
+        except Exception as error:  # noqa: BLE001 - anything at all, and carry on
+            print(f"{layer}: failed ({error})", flush=True)
+            failed.append(layer)
+    if failed:
+        sys.exit(f"not built: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

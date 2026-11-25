@@ -123,6 +123,18 @@ pub struct BaseMapChoices {
     pub names: bool,
 }
 
+impl BaseMapChoices {
+    /// Each switch with the name it is kept under between runs.
+    pub fn switches(&mut self) -> [(&'static str, &mut bool); 4] {
+        [
+            ("base map.imagery", &mut self.imagery),
+            ("base map.borders", &mut self.borders),
+            ("base map.roads", &mut self.roads),
+            ("base map.names", &mut self.names),
+        ]
+    }
+}
+
 impl Default for BaseMapChoices {
     fn default() -> Self {
         Self {

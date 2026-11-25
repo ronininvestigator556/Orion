@@ -8,6 +8,7 @@ mod cache;
 pub mod import;
 pub mod listing;
 pub mod places;
+pub mod settings;
 mod source;
 #[cfg(test)]
 mod test_support;

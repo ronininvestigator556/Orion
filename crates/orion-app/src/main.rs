@@ -123,6 +123,8 @@ struct Options {
     wait_seconds: Option<f64>,
     /// The size of the snapshot in pixels, if not the usual one.
     size: Option<[u32; 2]>,
+    /// A file to keep settings in, instead of the usual place.
+    settings: Option<std::path::PathBuf>,
 }
 
 /// Size of a snapshot in pixels, and its pixels per logical point: the same as the
@@ -163,6 +165,7 @@ fn parse_place(text: &str) -> Option<Place> {
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
      [--star-fixed] [--find <name or number> [--select-found]] [--at <latitude>,<longitude>[,<km above>]] \
      [--layers <name>[,<name>...]] [--import <GeoJSON, KML or CSV file>] \
+     [--settings <file to keep settings in>] \
      [--snapshot <picture file> [--wait <seconds>] [--size <width>x<height>]]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
@@ -241,6 +244,14 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                         .filter(|name| !name.is_empty()),
                 );
             }
+            "--settings" => {
+                options.settings = Some(
+                    arguments
+                        .next()
+                        .with_context(|| format!("--settings needs a file name\n{USAGE}"))?
+                        .into(),
+                );
+            }
             "--import" => {
                 options.imports.push(
                     arguments
@@ -294,6 +305,12 @@ struct Session {
     select_found: bool,
     /// How many files have been opened as Imported Layers, for giving each a colour.
     imported: usize,
+    /// Where what is switched on is kept between runs; `None` when it is not kept.
+    settings_file: Option<orion_data::settings::SettingsFile>,
+    /// What was last written there.
+    saved: orion_data::settings::Settings,
+    /// Frames drawn so far.
+    frames: u64,
     /// What the user has chosen to see of the Base Map.
     base_map: basemap::BaseMapChoices,
     place_names: reference::PlaceNames,
@@ -327,9 +344,13 @@ impl Running {
             event_loop.owned_display_handle(),
             cache.as_ref().map(Cache::tiles),
         ))?;
+        let settings_file = match &options.settings {
+            Some(path) => Some(orion_data::settings::SettingsFile::at(path)),
+            None => orion_data::settings::SettingsFile::in_default_location(),
+        };
         Ok(Self {
             window,
-            session: Session::new(renderer, cache, options)?,
+            session: Session::new(renderer, cache, options, settings_file)?,
         })
     }
 
@@ -360,15 +381,30 @@ fn snapshot(options: Options, path: &std::path::Path, wait: Duration) -> anyhow:
         SNAPSHOT_SCALE,
         cache.as_ref().map(Cache::tiles),
     ))?;
-    let mut session = Session::new(renderer, cache, options)?;
+    // A snapshot starts as at first launch, so the same command draws the same
+    // picture, unless it is told which settings to use.
+    let settings_file = options
+        .settings
+        .as_ref()
+        .map(orion_data::settings::SettingsFile::at);
+    let mut session = Session::new(renderer, cache, options, settings_file)?;
     let until = Instant::now() + wait;
+    let (mut frames, mut drawing) = (0_u32, Duration::ZERO);
     loop {
+        let started = Instant::now();
         session.frame();
+        frames += 1;
+        drawing += started.elapsed();
         if Instant::now() >= until {
             break;
         }
         std::thread::sleep(Duration::from_millis(16));
     }
+    log::info!(
+        "drew {frames} frames, {:.1} ms each on average",
+        drawing.as_secs_f64() * 1000.0 / f64::from(frames)
+    );
+    session.keep_settings();
     session
         .renderer
         .read_picture()?
@@ -378,7 +414,14 @@ fn snapshot(options: Options, path: &std::path::Path, wait: Duration) -> anyhow:
 }
 
 impl Session {
-    fn new(renderer: Renderer, cache: Option<Cache>, options: Options) -> anyhow::Result<Self> {
+    /// `settings_file` is where what is switched on is kept between runs. Without
+    /// one, everything starts as at first launch and nothing is kept.
+    fn new(
+        renderer: Renderer,
+        cache: Option<Cache>,
+        options: Options,
+        settings_file: Option<orion_data::settings::SettingsFile>,
+    ) -> anyhow::Result<Self> {
         let layer_cache = cache.clone();
         let mut orbit = OrbitLayer::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
         orbit.set_show_ground_track(options.ground_track);
@@ -403,6 +446,24 @@ impl Session {
         ))));
         for spec in picture_layer::ALL {
             layers.add(Box::new(picture_layer::PictureLayer::new(spec)));
+        }
+        // Put back what was switched on last time, then what this launch asks for.
+        let remembered = settings_file
+            .as_ref()
+            .map(orion_data::settings::SettingsFile::load)
+            .unwrap_or_default();
+        for index in 0..layers.len() {
+            if let Some(layer) = layers.get_mut(index)
+                && let Some(on) = remembered.get(&format!("layer.{}", layer.name()))
+            {
+                layer.set_on(on);
+            }
+        }
+        let mut base_map = basemap::BaseMapChoices::default();
+        for (name, switch) in base_map.switches() {
+            if let Some(on) = remembered.get(name) {
+                *switch = on;
+            }
         }
         for wanted in &options.layers {
             let found = (0..layers.len()).find(|index| {
@@ -463,7 +524,11 @@ impl Session {
                 ..sidebar::Sidebar::default()
             },
             imported: 0,
-            base_map: basemap::BaseMapChoices::default(),
+            settings_file,
+            // What the file holds, so that anything this launch changed is written.
+            saved: remembered,
+            frames: 0,
+            base_map,
             place_names: reference::PlaceNames::bundled(),
             segments: Vec::new(),
             cluster_dots: Vec::new(),
@@ -485,6 +550,42 @@ impl Session {
             }
         }
         Ok(session)
+    }
+
+    /// What is switched on now, as it is kept between runs. Imported Layers are left
+    /// out: remembering them would mean remembering where the user's files are.
+    fn settings(&self) -> orion_data::settings::Settings {
+        let mut settings = orion_data::settings::Settings::default();
+        for index in 0..self.layers.len() {
+            if let Some(layer) = self.layers.get(index).filter(|layer| !layer.is_imported()) {
+                settings.set(&format!("layer.{}", layer.name()), layer.is_on());
+            }
+        }
+        let mut base_map = self.base_map;
+        for (name, switch) in base_map.switches() {
+            settings.set(name, *switch);
+        }
+        settings
+    }
+
+    /// Writes what is switched on to the settings file, if it has changed.
+    fn keep_settings(&mut self) {
+        let Some(file) = &self.settings_file else {
+            return;
+        };
+        let settings = self.settings();
+        if settings == self.saved {
+            return;
+        }
+        if let Err(error) = file.save(&settings) {
+            log::warn!(
+                "could not keep settings in {}: {error}",
+                file.path().display()
+            );
+        }
+        // Remembered either way, so a folder that cannot be written is not retried
+        // every second.
+        self.saved = settings;
     }
 
     /// Opens a file of places as an Imported Layer, and says in the sidebar how it went.
@@ -786,6 +887,11 @@ impl Session {
         }
         if let Some(layer) = self.sidebar.remove_requested.take() {
             self.remove_layer(layer);
+        }
+        self.frames += 1;
+        // About once a second is soon enough to notice a switch being flipped.
+        if self.frames.is_multiple_of(60) {
+            self.keep_settings();
         }
         if let Some(path) = self.sidebar.open_requested.take() {
             self.import(std::path::Path::new(&path));
