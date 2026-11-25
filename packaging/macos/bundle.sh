@@ -28,8 +28,9 @@ app="$output/Orion.app"
 mkdir -p "$app/Contents/MacOS"
 cp "$binary" "$app/Contents/MacOS/orion"
 sed "s/__VERSION__/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
+mkdir -p "$app/Contents/Resources"
+cp "$here/Orion.icns" "$app/Contents/Resources/"
 if [ "$#" -gt 0 ]; then
-    mkdir -p "$app/Contents/Resources"
     cp "$@" "$app/Contents/Resources/"
 fi
 

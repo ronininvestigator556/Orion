@@ -102,7 +102,7 @@ jobs:
           cargo build --release --locked --package orion-app
           name="orion-${{ steps.version.outputs.version }}-linux-x86_64"
           mkdir -p "dist/$name"
-          cp target/release/orion packaging/linux/orion.desktop \
+          cp target/release/orion packaging/linux/orion.desktop packaging/linux/orion.png \
             README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.html "dist/$name/"
           tar --create --gzip --file "dist/$name.tar.gz" --directory dist "$name"
 

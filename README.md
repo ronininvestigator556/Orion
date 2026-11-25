@@ -49,7 +49,7 @@ Every download carries `THIRD-PARTY-LICENSES.html`, the licences of the crates c
 - `crates/orion-data`: fetching Element Sets and caching them on disk, with the rules for how often a source may be asked.
 - `crates/orion-app`: the desktop app, built on `wgpu`, `winit` and `egui`.
 - `about.toml`, `about.hbs`: which licences dependencies may use, and the page their texts are gathered into.
-- `packaging/`: what turns a compiled binary into each platform's download.
+- `packaging/`: what turns a compiled binary into each platform's download. The app icon is drawn by `cargo run --package orion-app --example make_icon`, which writes the icon files kept there.
 - `.github/workflows/`: checks run on every push, and the release build.
 - `GLOSSARY.md`: the project's vocabulary. Code and docs use these terms.
 - `docs/adr/`: decision records.

@@ -161,6 +161,7 @@ impl Running {
     fn new(event_loop: &ActiveEventLoop, options: Options) -> anyhow::Result<Self> {
         let attributes = Window::default_attributes()
             .with_title("Orion")
+            .with_window_icon(window_icon())
             .with_inner_size(LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(
             event_loop
@@ -503,6 +504,19 @@ impl Running {
             _ => {}
         }
     }
+}
+
+/// The icon shown in the title bar and taskbar on Windows and Linux. macOS takes its
+/// icon from the app bundle instead and ignores this.
+fn window_icon() -> Option<winit::window::Icon> {
+    let image = image::load_from_memory(include_bytes!("../assets/icon-256.png"))
+        .inspect_err(|error| log::warn!("could not read the window icon: {error}"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    winit::window::Icon::from_rgba(image.into_raw(), width, height)
+        .inspect_err(|error| log::warn!("could not use the window icon: {error}"))
+        .ok()
 }
 
 fn julian_date_now() -> JulianDate {
