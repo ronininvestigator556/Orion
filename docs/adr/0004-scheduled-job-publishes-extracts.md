@@ -16,3 +16,4 @@ Orion has no server: each copy fetches from Sources directly. That does not work
 - "No backend" now means no server. There is one pipeline to keep working, and if it stops, Extracts go stale but the app still runs.
 - Extracts derived from OpenStreetMap stay under its Open Database Licence, separate from the code's licence, and the app must show "© OpenStreetMap contributors" whenever such a Layer is on.
 - Sources that need a personal key, such as live ship positions, are used only with a key each user supplies. The project does not hold keys on anyone's behalf.
+- The same arrangement serves a Source whose raw files are too large or too rough for each copy to sift, where its terms allow republishing. Unrest Reports are sifted this way every hour from GDELT's index of the news, which would otherwise cost each copy several megabytes a day.

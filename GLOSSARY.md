@@ -19,7 +19,7 @@ One thing shown on a Layer: a fixed place such as a mine, a route such as a pipe
 _Avoid_: Entity, item, marker, point of interest
 
 **Base Map**:
-The picture of Earth's surface drawn beneath every Layer, which sharpens as the view moves closer, together with the borders, major roads and place names that make it readable.
+The picture of Earth's surface drawn beneath every Layer, which sharpens as the view moves closer, together with the borders, major roads and place names that make it readable. Far out it is imagery; close up it gives way to a street map.
 _Avoid_: Background, tiles, imagery layer
 
 **Cluster**:
@@ -39,8 +39,12 @@ A hot spot on the ground seen by a satellite's instrument, about a kilometre acr
 _Avoid_: Wildfire, fire, hotspot
 
 **Unrest Report**:
-A protest, a protest with violence or a strike as a Source reported it, or announced it for a day ahead, at a place and on a day. It is a report, not an observation: it may be late, placed no more exactly than a town, or wrong, and it never says where a crowd is at this moment.
+A protest, a protest with violence or a strike as news articles reported it, in a town and on a day. It is a report, not an observation: it may be late, placed no more exactly than the town, or wrong, and it never says where a crowd is at this moment or what is planned.
 _Avoid_: Protest or riot (as the general word), civil emergency, incident, demonstration
+
+**Travel Advisory**:
+A government's published advice about travelling to a country, with the level of caution it sets. It speaks for the whole country, or names parts of it in words.
+_Avoid_: Travel warning, alert, risk level
 
 **Road Incident**:
 Something getting in the way on a road, as the road's authority published it: an accident, a closure or roadworks.
@@ -59,7 +63,7 @@ A Layer made from a file of places that the user opens, as opposed to one that c
 _Avoid_: Custom layer, user layer, overlay
 
 **Time Coverage**:
-The moments a Layer is able to show: any moment, only the present, the present and some of the past, or those and what has been announced for the days ahead.
+The moments a Layer is able to show: any moment, only the present, or the present and some of the past.
 _Avoid_: Time range, availability, history
 
 ### What is in orbit
