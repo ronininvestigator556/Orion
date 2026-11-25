@@ -59,6 +59,8 @@ const CLUSTER_REACH_POINTS: f32 = 14.0;
 const MAX_CLUSTER_COUNTS: usize = 400;
 /// Clicking a Cluster brings the camera to this fraction of its height above the ground.
 const CLUSTER_ZOOM: f32 = 0.35;
+/// The largest file that will be opened as an Imported Layer.
+const MAX_IMPORT_BYTES: u64 = 300 * 1024 * 1024;
 /// A press and release less than this many logical points apart is a click, not a drag.
 const CLICK_SLOP_POINTS: f64 = 4.0;
 
@@ -113,10 +115,14 @@ struct Options {
     at: Option<Place>,
     /// Layers to switch on at launch, each named by the start of its name.
     layers: Vec<String>,
+    /// Files of places to open as Imported Layers at launch.
+    imports: Vec<std::path::PathBuf>,
     /// Draw to this picture file, with no window, and exit.
     snapshot: Option<std::path::PathBuf>,
     /// How long to run before taking the snapshot, in seconds.
     wait_seconds: Option<f64>,
+    /// The size of the snapshot in pixels, if not the usual one.
+    size: Option<[u32; 2]>,
 }
 
 /// Size of a snapshot in pixels, and its pixels per logical point: the same as the
@@ -156,7 +162,8 @@ fn parse_place(text: &str) -> Option<Place> {
 
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
      [--star-fixed] [--find <name or number> [--select-found]] [--at <latitude>,<longitude>[,<km above>]] \
-     [--layers <name>[,<name>...]] [--snapshot <picture file> [--wait <seconds>]]";
+     [--layers <name>[,<name>...]] [--import <GeoJSON, KML or CSV file>] \
+     [--snapshot <picture file> [--wait <seconds>] [--size <width>x<height>]]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
     let mut options = Options::default();
@@ -193,6 +200,22 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                         .into(),
                 );
             }
+            "--size" => {
+                let size = arguments
+                    .next()
+                    .with_context(|| format!("--size needs a width and height\n{USAGE}"))?;
+                let read = size.split_once('x').and_then(|(width, height)| {
+                    Some([width.trim().parse().ok()?, height.trim().parse().ok()?])
+                });
+                options.size = Some(
+                    read.filter(|size: &[u32; 2]| {
+                        size.iter().all(|side| (200..=8192).contains(side))
+                    })
+                    .with_context(|| {
+                        format!("{size:?} is not a size such as 2560x1600\n{USAGE}")
+                    })?,
+                );
+            }
             "--wait" => {
                 let seconds = arguments
                     .next()
@@ -216,6 +239,14 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
                         .split(',')
                         .map(|name| name.trim().to_lowercase())
                         .filter(|name| !name.is_empty()),
+                );
+            }
+            "--import" => {
+                options.imports.push(
+                    arguments
+                        .next()
+                        .with_context(|| format!("--import needs a file name\n{USAGE}"))?
+                        .into(),
                 );
             }
             "--find" => {
@@ -261,6 +292,8 @@ struct Session {
     /// True until the first search result has been selected, when launched to do so.
     /// Results can take a while to appear, because Layers fetch in the background.
     select_found: bool,
+    /// How many files have been opened as Imported Layers, for giving each a colour.
+    imported: usize,
     /// What the user has chosen to see of the Base Map.
     base_map: basemap::BaseMapChoices,
     place_names: reference::PlaceNames,
@@ -320,9 +353,10 @@ fn default_cache() -> Option<Cache> {
 /// data arriving over several frames, such as Base Map tiles, has time to load.
 fn snapshot(options: Options, path: &std::path::Path, wait: Duration) -> anyhow::Result<()> {
     let cache = default_cache();
+    let size = options.size.unwrap_or(SNAPSHOT_SIZE);
     let renderer = pollster::block_on(Renderer::offscreen(
-        SNAPSHOT_SIZE[0],
-        SNAPSHOT_SIZE[1],
+        size[0],
+        size[1],
         SNAPSHOT_SCALE,
         cache.as_ref().map(Cache::tiles),
     ))?;
@@ -413,7 +447,8 @@ impl Session {
             }
         }
 
-        Ok(Self {
+        let imports = options.imports.clone();
+        let mut session = Self {
             renderer,
             rig,
             sidereal_angle,
@@ -423,7 +458,11 @@ impl Session {
             selected,
             hovered: None,
             select_found: options.select_found && !search.trim().is_empty(),
-            sidebar: sidebar::Sidebar { search },
+            sidebar: sidebar::Sidebar {
+                search,
+                ..sidebar::Sidebar::default()
+            },
+            imported: 0,
             base_map: basemap::BaseMapChoices::default(),
             place_names: reference::PlaceNames::bundled(),
             segments: Vec::new(),
@@ -433,7 +472,92 @@ impl Session {
             cursor: None,
             last_frame: Instant::now(),
             frame_ms: 0.0,
-        })
+        };
+        for path in imports {
+            session.import(&path);
+        }
+        // The sidebar narrows every Layer to the search each frame; do it once now so
+        // that what is found is right before the first frame is drawn.
+        let search = session.sidebar.search.clone();
+        for index in 0..session.layers.len() {
+            if let Some(layer) = session.layers.get_mut(index) {
+                layer.set_search(&search);
+            }
+        }
+        Ok(session)
+    }
+
+    /// Opens a file of places as an Imported Layer, and says in the sidebar how it went.
+    fn import(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let opened = std::fs::metadata(path)
+            .map_err(|error| error.to_string())
+            .and_then(|metadata| {
+                if metadata.len() > MAX_IMPORT_BYTES {
+                    return Err("it is larger than 300 MB".to_owned());
+                }
+                std::fs::read(path).map_err(|error| error.to_string())
+            })
+            .and_then(|bytes| {
+                orion_data::import::parse_import(&name, &String::from_utf8_lossy(&bytes))
+                    .map_err(|error| error.0)
+            });
+        self.sidebar.import_result = Some(match opened {
+            Ok(features) => {
+                let count = features.len();
+                let first = features.first().map(|feature| {
+                    reference::on_globe([feature.longitude_deg, feature.latitude_deg])
+                });
+                self.layers
+                    .add(Box::new(feature_layer::FeatureLayer::imported(
+                        &name,
+                        features,
+                        self.imported,
+                    )));
+                self.imported += 1;
+                self.sidebar.import_path.clear();
+                // Turn to the first place, so something of the file is in view.
+                if let Some(first) = first {
+                    self.rig.face(first, self.sidereal_angle);
+                }
+                (format!("Opened {name}: {count} places."), false)
+            }
+            Err(reason) => {
+                log::warn!("opening {}: {reason}", path.display());
+                (format!("Could not open {name}: {reason}."), true)
+            }
+        });
+    }
+
+    /// Takes an Imported Layer off the globe.
+    fn remove_layer(&mut self, layer: usize) {
+        if !self
+            .layers
+            .get(layer)
+            .is_some_and(|layer| layer.is_imported())
+        {
+            return;
+        }
+        self.layers.remove(layer);
+        self.renderer.layer_removed(layer);
+        self.hovered = None;
+        // A selection on a later Layer follows it up; one on the Layer removed goes.
+        self.selected =
+            self.selected
+                .and_then(|selection| match selection.feature.layer.cmp(&layer) {
+                    std::cmp::Ordering::Less => Some(selection),
+                    std::cmp::Ordering::Equal => None,
+                    std::cmp::Ordering::Greater => Some(Selection {
+                        feature: FeatureRef {
+                            layer: selection.feature.layer - 1,
+                            ..selection.feature
+                        },
+                        ..selection
+                    }),
+                });
     }
 
     /// Advances everything by one frame and draws it.
@@ -659,6 +783,12 @@ impl Session {
         }
         if let Some(feature) = picked {
             self.select_and_face(feature);
+        }
+        if let Some(layer) = self.sidebar.remove_requested.take() {
+            self.remove_layer(layer);
+        }
+        if let Some(path) = self.sidebar.open_requested.take() {
+            self.import(std::path::Path::new(&path));
         }
         // A Feature on a Layer that has been switched off is no longer on show.
         let selection_is_on_show = self.selected.is_none_or(|selection| {
@@ -893,6 +1023,8 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // A file dropped on the window is opened as an Imported Layer.
+            WindowEvent::DroppedFile(path) => running.session.import(&path),
             WindowEvent::Resized(size) => running.session.renderer.resize(size.width, size.height),
             WindowEvent::RedrawRequested => running.redraw(),
             _ => {}
@@ -935,6 +1067,19 @@ mod tests {
             Some(std::path::Path::new("out.png"))
         );
         assert_eq!(picture.wait_seconds, Some(2.5));
+        assert_eq!(
+            parse(&["--size", "1920x1080"]).unwrap().size,
+            Some([1920, 1080])
+        );
+        assert!(parse(&["--size", "huge"]).is_err());
+        assert!(parse(&["--size", "10x10"]).is_err());
+        assert_eq!(
+            parse(&["--import", "a.kml", "--import", "b.csv"])
+                .unwrap()
+                .imports
+                .len(),
+            2
+        );
         assert_eq!(
             parse(&["--at", "37.77,-122.42,60"]).unwrap().at,
             Some(Place {

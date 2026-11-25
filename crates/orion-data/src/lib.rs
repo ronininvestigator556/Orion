@@ -5,6 +5,7 @@
 //! and enforces how often a Source may be asked.
 
 mod cache;
+pub mod import;
 pub mod listing;
 pub mod places;
 mod source;

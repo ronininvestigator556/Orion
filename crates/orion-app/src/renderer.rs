@@ -297,6 +297,25 @@ impl Renderer {
         })
     }
 
+    /// Forgets what is held for the Layer at this position and re-numbers what is held
+    /// for the Layers after it, which have each moved up one. Call when a Layer is removed.
+    pub fn layer_removed(&mut self, removed: usize) {
+        self.routes.retain(|(layer, ..)| *layer != removed);
+        for (layer, ..) in &mut self.routes {
+            if *layer > removed {
+                *layer -= 1;
+            }
+        }
+        self.routes_on_show.clear();
+        self.overlays.retain(|(layer, _)| *layer != removed);
+        for (layer, _) in &mut self.overlays {
+            if *layer > removed {
+                *layer -= 1;
+            }
+        }
+        self.overlays_on_show.clear();
+    }
+
     /// Size of the drawing area in pixels.
     pub fn size(&self) -> PhysicalSize<u32> {
         self.size

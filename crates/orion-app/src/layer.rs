@@ -164,6 +164,11 @@ pub trait Layer {
         None
     }
 
+    /// True for a Layer made from a file the user opened, which the user may remove.
+    fn is_imported(&self) -> bool {
+        false
+    }
+
     /// False for a Layer that is a picture and has no Features to count, find or filter.
     fn has_features(&self) -> bool {
         true
@@ -215,6 +220,18 @@ impl Layers {
     /// Adds a Layer after the ones already present.
     pub fn add(&mut self, layer: Box<dyn Layer>) {
         self.others.push(layer);
+    }
+
+    /// Takes away a Layer added with [`Self::add`]. Every Layer after it moves up one,
+    /// so anything holding a Layer's position must be told. The first Layer stays.
+    pub fn remove(&mut self, layer: usize) {
+        if layer >= 1 && layer <= self.others.len() {
+            self.others.remove(layer - 1);
+            // What was gathered describes Layers as they were; the next update redoes it.
+            self.dots.clear();
+            self.ranges.clear();
+            self.shown.clear();
+        }
     }
 
     pub fn len(&self) -> usize {

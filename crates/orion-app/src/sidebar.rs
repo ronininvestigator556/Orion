@@ -20,6 +20,14 @@ const WARNING: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
 pub struct Sidebar {
     /// What has been typed into the search box.
     pub search: String,
+    /// What has been typed into the box for the path of a file to open.
+    pub import_path: String,
+    /// The path the user asked to open this frame.
+    pub open_requested: Option<String>,
+    /// The Imported Layer the user asked to remove this frame, by its position.
+    pub remove_requested: Option<usize>,
+    /// How the last attempt to open a file went, and whether it failed.
+    pub import_result: Option<(String, bool)>,
 }
 
 /// Draws the sidebar, which changes the Layers in place: switching them on and off,
@@ -72,19 +80,58 @@ pub fn draw(
                                     .is_some_and(|layer| layer.theme() == theme)
                             })
                             .collect();
-                        if members.is_empty() {
+                        // Imported is always listed: it is where files are opened.
+                        if members.is_empty() && theme != Theme::Imported {
                             continue;
                         }
                         ui.add_space(6.0);
                         ui.label(egui::RichText::new(theme.name()).strong());
                         for index in members {
                             let covered = layers.covers(index, at, real_now);
-                            draw_layer(ui, layers, index, covered, now);
+                            if draw_layer(ui, layers, index, covered, now) {
+                                sidebar.remove_requested = Some(index);
+                            }
+                        }
+                        if theme == Theme::Imported {
+                            draw_open_file(ui, sidebar);
                         }
                     }
                 });
         });
     picked
+}
+
+/// Draws where a file of the user's own places is opened.
+fn draw_open_file(ui: &mut egui::Ui, sidebar: &mut Sidebar) {
+    ui.weak("Drop a GeoJSON, KML or CSV file on the window, or give its path:");
+    ui.horizontal(|ui| {
+        let field = egui::TextEdit::singleline(&mut sidebar.import_path)
+            .hint_text("Path to a file")
+            .desired_width(WIDTH - 90.0);
+        let entered =
+            ui.add(field).lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let clicked = ui
+            .add_enabled(
+                !sidebar.import_path.trim().is_empty(),
+                egui::Button::new("Open"),
+            )
+            .clicked();
+        if (entered || clicked) && !sidebar.import_path.trim().is_empty() {
+            sidebar.open_requested = Some(sidebar.import_path.trim().to_owned());
+        }
+    });
+    match &sidebar.import_result {
+        Some((message, true)) => {
+            ui.colored_label(WARNING, message);
+        }
+        Some((message, false)) => {
+            ui.weak(message);
+        }
+        None => {}
+    }
+    ui.weak(
+        "A file is read where it is and sent nowhere. A CSV needs latitude and longitude columns.",
+    );
 }
 
 /// Lists what the search found on each Layer that is on.
@@ -121,16 +168,18 @@ fn draw_results(ui: &mut egui::Ui, layers: &Layers) -> Option<FeatureRef> {
 }
 
 /// Draws one Layer's entry: its switch, colour and count, then, while it is on, its
-/// status, refresh control and filter.
+/// status, refresh control and filter. Returns true if the user asked for the Layer,
+/// one they imported, to be removed.
 fn draw_layer(
     ui: &mut egui::Ui,
     layers: &mut Layers,
     index: usize,
     covered: bool,
     now: SystemTime,
-) {
+) -> bool {
+    let mut remove = false;
     let Some(layer) = layers.get_mut(index) else {
-        return;
+        return false;
     };
     ui.horizontal(|ui| {
         let mut on = layer.is_on();
@@ -145,9 +194,15 @@ fn draw_layer(
         if layer.has_features() {
             ui.weak(format_counts(layer.counts()));
         }
+        if layer.is_imported() {
+            remove = ui
+                .small_button("Remove")
+                .on_hover_text("Takes the Layer off the globe. The file itself is not touched.")
+                .clicked();
+        }
     });
     if !layer.is_on() {
-        return;
+        return remove;
     }
 
     ui.indent(("layer", index), |ui| {
@@ -189,10 +244,11 @@ fn draw_layer(
                 }
             }
         }
-        if layer.has_features() {
+        if layer.has_features() && !layer.is_imported() {
             ui.collapsing("Filter", |ui| layer.filter_ui(ui));
         }
     });
+    remove
 }
 
 /// Formats how many Features a Layer shows, such as `409 of 29389` or just `29389`.

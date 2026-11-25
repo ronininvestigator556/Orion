@@ -102,7 +102,7 @@ pub struct Spec {
     /// Whether Features too close together to tell apart are gathered into Clusters.
     /// Only for places that stay put: `show` must be [`Show::Always`].
     pub cluster: bool,
-    /// Whether the Features are routes, drawn as their lines and not as dots.
+    /// Whether a Feature that has a line is drawn as it, and not as a dot.
     pub routes: bool,
 }
 
@@ -111,7 +111,29 @@ fn linear(color: [u8; 3]) -> [u8; 3] {
     color.map(|channel| ((f32::from(channel) / 255.0).powf(2.2) * 255.0).round() as u8)
 }
 
+/// The colours Imported Layers take in turn, as written for the screen.
+const IMPORT_COLORS: [[u8; 3]; 5] = [
+    [255, 128, 171],
+    [185, 246, 202],
+    [255, 209, 128],
+    [128, 216, 255],
+    [234, 128, 252],
+];
+
+/// The Listing of a Layer that has none: an Imported Layer's Features come from a
+/// file the user opened, and nothing is ever fetched for it.
+const NO_LISTING: Listing = Listing {
+    source: "A file you opened",
+    url: "",
+    accept: None,
+    cache_name: "",
+    parse: |_| Ok(Vec::new()),
+    refresh_every: Duration::MAX,
+};
+
 pub struct FeatureLayer {
+    /// The name of the file an Imported Layer was read from; `None` for every other Layer.
+    imported_from: Option<String>,
     spec: &'static Spec,
     fetcher: Arc<dyn Fetcher>,
     cache: Option<Cache>,
@@ -161,6 +183,7 @@ impl FeatureLayer {
     /// A Layer that is off and has fetched nothing.
     pub fn new(spec: &'static Spec, fetcher: Arc<dyn Fetcher>, cache: Option<Cache>) -> Self {
         Self {
+            imported_from: None,
             spec,
             fetcher,
             cache,
@@ -188,6 +211,55 @@ impl FeatureLayer {
             last_attempt: None,
             failure: None,
         }
+    }
+
+    /// An Imported Layer: the places in a file the user opened, switched on. `number`
+    /// counts the files opened so far, and picks the Layer's colour.
+    pub fn imported(file_name: &str, features: Vec<Feature>, number: usize) -> Self {
+        /// Never asked for anything.
+        struct NoFetcher;
+        impl Fetcher for NoFetcher {
+            fn get(
+                &self,
+                _url: &str,
+                _accept: Option<&str>,
+            ) -> Result<String, orion_data::FetchError> {
+                Err(orion_data::FetchError::Network(
+                    "nothing to fetch".to_owned(),
+                ))
+            }
+        }
+        // A Layer's description lives as long as the app; one is made for each file
+        // opened, which is a handful in any run.
+        let name: &'static str = Box::leak(file_name.to_owned().into_boxed_str());
+        let classes: &'static [Class] = Box::leak(Box::new([Class::new(
+            "Places",
+            IMPORT_COLORS[number % IMPORT_COLORS.len()],
+        )]));
+        let spec: &'static Spec = Box::leak(Box::new(Spec {
+            name,
+            theme: Theme::Imported,
+            listing: NO_LISTING,
+            classes,
+            coverage: TimeCoverage::AnyMoment,
+            show: Show::Always,
+            dot_scale: |_| 1.6,
+            note: "",
+            attribution: "",
+            cluster: true,
+            routes: true,
+        }));
+        let mut layer = Self::new(spec, Arc::new(NoFetcher), None);
+        layer.imported_from = Some(file_name.to_owned());
+        layer.looked_in_cache = true;
+        layer.on = true;
+        layer.set_features(features, SystemTime::now());
+        layer
+    }
+
+    /// True if a Feature is drawn as its line.
+    fn is_route(&self, feature: &Feature) -> bool {
+        self.spec.routes && !feature.shape.is_empty()
     }
 
     fn set_features(&mut self, features: Vec<Feature>, fetched_at: SystemTime) {
@@ -226,7 +298,7 @@ impl FeatureLayer {
     /// Takes in a fetch that has finished and starts one if the copy on hand is stale.
     /// Does nothing while the Layer is off.
     fn tick(&mut self, now: SystemTime) {
-        if !self.on {
+        if !self.on || self.imported_from.is_some() {
             return;
         }
         if !self.looked_in_cache {
@@ -336,7 +408,9 @@ impl FeatureLayer {
             .iter()
             .zip(&self.listed)
             .map(|(feature, listed)| {
-                listed.then(|| cluster::cell(feature.latitude_deg, feature.longitude_deg, level))
+                // A route is drawn as its line from any distance, so it joins no Cluster.
+                (*listed && !self.is_route(feature))
+                    .then(|| cluster::cell(feature.latitude_deg, feature.longitude_deg, level))
             })
             .collect();
         for (cell, position) in cells.iter().zip(&self.positions) {
@@ -435,7 +509,7 @@ impl FeatureLayer {
                 // A route is drawn as its line; only the selected one has a dot as well,
                 // to carry its name.
                 let in_cluster = self.clustered.get(index).copied().unwrap_or(false);
-                if (in_cluster || self.spec.routes) && highlight.selected != Some(index) {
+                if (in_cluster || self.is_route(feature)) && highlight.selected != Some(index) {
                     return Instance::HIDDEN;
                 }
                 let [r, g, b] = colors
@@ -504,6 +578,12 @@ impl Layer for FeatureLayer {
     }
 
     fn status(&self, now: SystemTime) -> LayerStatus {
+        if self.imported_from.is_some() {
+            return LayerStatus {
+                text: "From a file you opened. It is read where it is and sent nowhere.".to_owned(),
+                refresh: None,
+            };
+        }
         let source = self.spec.listing.source;
         let age = self
             .fetched_at
@@ -540,7 +620,7 @@ impl Layer for FeatureLayer {
         let recently = self
             .last_attempt
             .is_some_and(|at| now.duration_since(at).unwrap_or_default() < MIN_INTERVAL);
-        if self.on && !recently {
+        if self.on && !recently && self.imported_from.is_none() {
             self.failure = None;
             self.start_fetch(now);
         }
@@ -639,6 +719,10 @@ impl Layer for FeatureLayer {
 
     fn attribution(&self) -> Option<&'static str> {
         (!self.spec.attribution.is_empty()).then_some(self.spec.attribution)
+    }
+
+    fn is_imported(&self) -> bool {
+        self.imported_from.is_some()
     }
 
     fn set_view(&mut self, view: &LayerView) {
@@ -802,6 +886,43 @@ mod tests {
         cluster: false,
         routes: true,
     };
+
+    #[test]
+    fn an_imported_layer_shows_a_files_places_and_fetches_nothing() {
+        let mut point = Feature::at("a", "Depot", 51.5, -0.12);
+        point.attributes = "Kind\tDepot\n".to_owned();
+        let mut route = Feature::at("b", "Route 7", 1.0, 1.0);
+        route.shape = vec![vec![[0.0, 0.0], [2.0, 0.0]]];
+        let mut layer = FeatureLayer::imported("sites.geojson", vec![point, route], 0);
+
+        assert!(layer.is_imported());
+        assert!(layer.is_on());
+        assert_eq!(layer.name(), "sites.geojson");
+        assert_eq!(layer.theme(), Theme::Imported);
+        assert_eq!(layer.counts(), (2, 2));
+        assert!(!layer.is_loading());
+        let status = layer.status(SystemTime::now());
+        assert!(status.text.contains("sent nowhere"), "{}", status.text);
+        assert_eq!(status.refresh, None);
+
+        // Nothing is ever in flight, however long it is left on or however it is asked.
+        layer.tick(SystemTime::now() + Duration::from_secs(86_400 * 30));
+        layer.request_refresh(SystemTime::now());
+        assert!(layer.in_flight.is_none());
+
+        // The point is a dot and the route a line.
+        layer.rebuild_dots(start(), Highlight::default());
+        assert_eq!(shown(&layer), ["Depot"]);
+        assert_eq!(layer.routes().unwrap().1.len(), 8);
+        assert_eq!(
+            layer.card(0, start()).unwrap().sections[0][0].value,
+            "Depot"
+        );
+
+        // A second file gets a colour of its own.
+        let other = FeatureLayer::imported("more.csv", vec![Feature::at("c", "C", 0.0, 0.0)], 1);
+        assert_ne!(other.swatch(), layer.swatch());
+    }
 
     #[test]
     fn routes_are_drawn_as_lines_and_picked_by_them() {
