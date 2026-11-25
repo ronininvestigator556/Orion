@@ -14,6 +14,7 @@
 
 pub mod catalogue;
 pub mod clock;
+pub mod codes;
 pub mod frames;
 pub mod sun;
 pub mod time;

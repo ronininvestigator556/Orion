@@ -258,11 +258,24 @@ pub fn draw_selected(
                 ui.end_row();
             };
 
-            egui::Grid::new("identity").num_columns(2).show(ui, |ui| {
-                row(ui, "Catalogue number", details.catalogue_number.to_string());
-                row(ui, "Designator", details.designator.clone());
-                row(ui, "Kind", kind_name(details.kind).to_owned());
-            });
+            egui::Grid::new("identity")
+                .num_columns(2)
+                // Owner and launch site names can be long; wrap them instead of
+                // stretching the panel across the globe.
+                .max_col_width(240.0)
+                .show(ui, |ui| {
+                    row(ui, "Catalogue number", details.catalogue_number.to_string());
+                    row(ui, "Designator", details.designator.clone());
+                    row(ui, "Kind", kind_name(details.kind).to_owned());
+                    match &details.record {
+                        Some(record) => {
+                            row(ui, "Owner", record.owner.clone());
+                            row(ui, "Launched", record.launch_date.clone());
+                            row(ui, "Launch site", record.launch_site.clone());
+                        }
+                        None => row(ui, "Owner and launch", "Not yet on record".to_owned()),
+                    }
+                });
 
             ui.separator();
             match details.now {

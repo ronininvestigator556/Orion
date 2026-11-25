@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use glam::{DVec3, Vec3};
 use orion_core::EARTH_EQUATORIAL_RADIUS_KM;
-use orion_core::catalogue::{ObjectKind, TrackedObject};
+use orion_core::catalogue::{CatalogueRecords, ObjectKind, TrackedObject};
+use orion_core::codes::{launch_site_name, owner_name};
 use orion_core::frames::{Geodetic, geodetic};
 use orion_core::time::{CalendarTime, JulianDate};
 use rayon::prelude::*;
@@ -43,6 +44,25 @@ pub struct Details {
     pub perigee_altitude_km: f64,
     /// `None` if the object has no Position at this moment.
     pub now: Option<Now>,
+    /// `None` if the object has no Catalogue Record on hand, as can happen for a new launch.
+    pub record: Option<RecordDetails>,
+}
+
+/// A Catalogue Record with its codes spelled out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordDetails {
+    pub owner: String,
+    /// Launch date as `YYYY-MM-DD`.
+    pub launch_date: String,
+    pub launch_site: String,
+}
+
+/// Spells out a code where its name is known, such as `United States (US)`.
+fn spell_out(code: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{name} ({code})"),
+        None => code.to_owned(),
+    }
 }
 
 /// Where a Tracked Object is at the moment on show.
@@ -58,6 +78,7 @@ fn to_earth_radii(position_km: [f64; 3]) -> Vec3 {
 
 pub struct Tracked {
     objects: Vec<TrackedObject>,
+    records: CatalogueRecords,
     /// One per Tracked Object, in the same order, refreshed by `propagate`.
     instances: Vec<Instance>,
     /// The Epoch that half the Element Sets are older than; `None` if there are none.
@@ -79,7 +100,7 @@ pub struct Summary {
 }
 
 impl Tracked {
-    pub fn new(objects: Vec<TrackedObject>) -> Self {
+    pub fn new(objects: Vec<TrackedObject>, records: CatalogueRecords) -> Self {
         // The median, not the newest: a few Element Sets are published with an Epoch
         // days in the future, which would make the whole set look fresher than it is.
         let mut epochs: Vec<f64> = objects
@@ -91,15 +112,18 @@ impl Tracked {
 
         Self {
             objects,
+            records,
             instances: Vec::new(),
             median_epoch,
             last_propagation: Duration::ZERO,
         }
     }
 
-    /// Swaps in a new set of Tracked Objects, for example after a refresh.
-    pub fn replace(&mut self, objects: Vec<TrackedObject>) {
-        *self = Self::new(objects);
+    /// Swaps in a new set of Tracked Objects after a refresh, and new Catalogue Records
+    /// if the refresh brought them.
+    pub fn replace(&mut self, objects: Vec<TrackedObject>, records: Option<CatalogueRecords>) {
+        let records = records.unwrap_or_else(|| std::mem::take(&mut self.records));
+        *self = Self::new(objects, records);
     }
 
     /// Computes every Tracked Object's Position at the given moment.
@@ -156,6 +180,17 @@ impl Tracked {
                 over: geodetic(state.position_km),
                 speed_km_s: state.speed_km_s,
             }),
+            record: self
+                .records
+                .get(&object.catalogue_number)
+                .map(|record| RecordDetails {
+                    owner: spell_out(&record.owner, owner_name(&record.owner)),
+                    launch_date: record.launch_date.clone(),
+                    launch_site: spell_out(
+                        &record.launch_site,
+                        launch_site_name(&record.launch_site),
+                    ),
+                }),
         })
     }
 
@@ -217,10 +252,13 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::feed::load_snapshot;
+    use crate::feed::{load_snapshot, load_snapshot_catalogue};
 
     fn snapshot() -> Tracked {
-        Tracked::new(load_snapshot().expect("a readable Snapshot"))
+        Tracked::new(
+            load_snapshot().expect("a readable Snapshot"),
+            load_snapshot_catalogue().expect("readable Catalogue Records"),
+        )
     }
 
     /// A moment inside the period the Snapshot was captured in.
@@ -339,6 +377,12 @@ mod tests {
         assert!((details.inclination_deg - 51.6).abs() < 0.1, "{details:?}");
         assert!(details.perigee_altitude_km <= details.apogee_altitude_km);
 
+        let record = details.record.expect("a Catalogue Record");
+        assert_eq!(record.owner, "International Space Station (ISS)");
+        assert_eq!(record.launch_date, "1998-11-20");
+        assert!(record.launch_site.ends_with("(TYMSC)"), "{record:?}");
+        assert!(record.launch_site.contains("Kazakhstan"), "{record:?}");
+
         let now = details.now.expect("a Position");
         assert!((370.0..460.0).contains(&now.over.altitude_km), "{now:?}");
         // A low circular orbit is travelled at about 7.66 km/s.
@@ -385,5 +429,34 @@ mod tests {
                 .distance(ground_track[0].normalize())
                 < 1e-5
         );
+    }
+
+    #[test]
+    fn a_refresh_without_catalogue_records_keeps_the_ones_on_hand() {
+        let mut tracked = snapshot();
+        let index = station(&tracked);
+        let before = tracked.details(index, snapshot_moment()).unwrap().record;
+        assert!(before.is_some());
+
+        tracked.replace(load_snapshot().unwrap(), None);
+        let index = station(&tracked);
+        assert_eq!(
+            tracked.details(index, snapshot_moment()).unwrap().record,
+            before
+        );
+
+        // New records replace the old; an object missing from them has none.
+        tracked.replace(load_snapshot().unwrap(), Some(CatalogueRecords::new()));
+        let index = station(&tracked);
+        assert_eq!(
+            tracked.details(index, snapshot_moment()).unwrap().record,
+            None
+        );
+    }
+
+    #[test]
+    fn codes_without_a_known_name_are_shown_as_they_are() {
+        assert_eq!(spell_out("US", Some("United States")), "United States (US)");
+        assert_eq!(spell_out("XYZ", None), "XYZ");
     }
 }

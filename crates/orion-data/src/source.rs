@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::{ElementSetFiles, has_element_set_header};
+use crate::{ElementSetFiles, has_catalogue_header, has_element_set_header};
 
 /// A place Element Sets can be fetched from.
 pub trait Source: Send + Sync {
@@ -15,6 +15,9 @@ pub trait Source: Send + Sync {
     /// An implementation must stop at the first failure and not retry: the caller
     /// decides when another attempt is allowed.
     fn fetch(&self) -> Result<ElementSetFiles, FetchError>;
+
+    /// Fetches the catalogue file that Catalogue Records are read from.
+    fn fetch_catalogue(&self) -> Result<String, FetchError>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +28,8 @@ pub enum FetchError {
     Network(String),
     /// The Source answered, but not with Element Sets.
     NotElementSets,
+    /// The Source answered, but not with a catalogue file.
+    NotCatalogueRecords,
 }
 
 impl fmt::Display for FetchError {
@@ -39,6 +44,9 @@ impl fmt::Display for FetchError {
             Self::Refused(status) => write!(f, "the source answered with HTTP status {status}"),
             Self::Network(reason) => write!(f, "could not reach the source: {reason}"),
             Self::NotElementSets => write!(f, "the source did not return Element Sets"),
+            Self::NotCatalogueRecords => {
+                write!(f, "the source did not return Catalogue Records")
+            }
         }
     }
 }
@@ -56,17 +64,24 @@ const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 pub struct CelesTrak {
     agent: ureq::Agent,
     endpoint: String,
+    catalogue_endpoint: String,
 }
 
 impl CelesTrak {
     pub const ENDPOINT: &'static str = "https://celestrak.org/NORAD/elements/gp.php";
 
+    /// The whole satellite catalogue as one file, about 7 MB.
+    pub const CATALOGUE_ENDPOINT: &'static str = "https://celestrak.org/pub/satcat.csv";
+
     pub fn new() -> Self {
-        Self::with_endpoint(Self::ENDPOINT)
+        Self::with_endpoints(Self::ENDPOINT, Self::CATALOGUE_ENDPOINT)
     }
 
-    /// Uses a different address for the service, for testing against a local server.
-    pub fn with_endpoint(endpoint: impl Into<String>) -> Self {
+    /// Uses different addresses for the service, for testing against a local server.
+    pub fn with_endpoints(
+        endpoint: impl Into<String>,
+        catalogue_endpoint: impl Into<String>,
+    ) -> Self {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(60)))
             .user_agent(concat!("orion/", env!("CARGO_PKG_VERSION")))
@@ -74,6 +89,7 @@ impl CelesTrak {
         Self {
             agent: config.into(),
             endpoint: endpoint.into(),
+            catalogue_endpoint: catalogue_endpoint.into(),
         }
     }
 
@@ -124,12 +140,68 @@ impl Source for CelesTrak {
             debris: self.query("NAME", "DEB")?,
         })
     }
+
+    fn fetch_catalogue(&self) -> Result<String, FetchError> {
+        let mut response = self
+            .agent
+            .get(&self.catalogue_endpoint)
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::StatusCode(status) => FetchError::Refused(status),
+                other => FetchError::Network(other.to_string()),
+            })?;
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE_BYTES)
+            .read_to_string()
+            .map_err(|error| FetchError::Network(error.to_string()))?;
+
+        if has_catalogue_header(&text) {
+            Ok(text)
+        } else {
+            Err(FetchError::NotCatalogueRecords)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{FakeServer, HEADER, files};
+    use crate::test_support::{FakeServer, HEADER, catalogue, files};
+
+    fn celestrak(server: &FakeServer) -> CelesTrak {
+        CelesTrak::with_endpoints(server.endpoint(), server.catalogue_endpoint())
+    }
+
+    #[test]
+    fn the_catalogue_is_fetched_from_its_own_address() {
+        let server = FakeServer::start(|_| (200, catalogue()));
+        assert_eq!(celestrak(&server).fetch_catalogue(), Ok(catalogue()));
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].starts_with("GET /pub/satcat.csv "),
+            "{}",
+            requests[0]
+        );
+    }
+
+    #[test]
+    fn a_catalogue_answer_that_is_something_else_is_rejected() {
+        let server = FakeServer::start(|_| (200, files().satellites));
+        assert_eq!(
+            celestrak(&server).fetch_catalogue(),
+            Err(FetchError::NotCatalogueRecords)
+        );
+
+        let refusing = FakeServer::start(|_| (403, "no".to_owned()));
+        assert_eq!(
+            celestrak(&refusing).fetch_catalogue(),
+            Err(FetchError::Refused(403))
+        );
+    }
 
     fn body_for(request: &str) -> String {
         let files = files();
@@ -147,9 +219,7 @@ mod tests {
     #[test]
     fn fetch_asks_for_each_kind_as_csv() {
         let server = FakeServer::start(|request| (200, body_for(request)));
-        let fetched = CelesTrak::with_endpoint(server.endpoint())
-            .fetch()
-            .expect("a successful fetch");
+        let fetched = celestrak(&server).fetch().expect("a successful fetch");
         assert_eq!(fetched, files());
 
         let requests = server.requests();
@@ -175,7 +245,7 @@ mod tests {
                 )
             }
         });
-        let result = CelesTrak::with_endpoint(server.endpoint()).fetch();
+        let result = celestrak(&server).fetch();
 
         assert_eq!(result, Err(FetchError::Refused(403)));
         // The refused request was the second; the third was never sent.
@@ -185,7 +255,7 @@ mod tests {
     #[test]
     fn a_message_with_a_success_status_is_not_element_sets() {
         let server = FakeServer::start(|_| (200, "No GP data found".to_owned()));
-        let result = CelesTrak::with_endpoint(server.endpoint()).fetch();
+        let result = celestrak(&server).fetch();
 
         assert_eq!(result, Err(FetchError::NotElementSets));
         assert_eq!(server.requests().len(), 1);
@@ -194,7 +264,9 @@ mod tests {
     #[test]
     fn an_unreachable_source_is_a_network_error() {
         // Nothing listens on port 1.
-        let result = CelesTrak::with_endpoint("http://127.0.0.1:1/gp.php").fetch();
+        let result =
+            CelesTrak::with_endpoints("http://127.0.0.1:1/gp.php", "http://127.0.0.1:1/satcat.csv")
+                .fetch();
         assert!(matches!(result, Err(FetchError::Network(_))), "{result:?}");
     }
 

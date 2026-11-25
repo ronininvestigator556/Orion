@@ -5,7 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::{ElementSetFiles, Loaded};
+use orion_core::catalogue::CatalogueRecords;
+
+use crate::{ElementSetFiles, Loaded, parse_catalogue};
 
 const SATELLITES: &str = "satellites.csv";
 const ROCKET_BODIES: &str = "rocket_bodies.csv";
@@ -14,6 +16,10 @@ const DEBRIS: &str = "debris.csv";
 const FETCHED_AT: &str = "fetched_at";
 /// Holds the time of the last attempt to fetch, successful or not, as seconds since 1970.
 const LAST_ATTEMPT: &str = "last_attempt";
+/// CelesTrak's satellite catalogue, as fetched.
+const CATALOGUE: &str = "catalogue.csv";
+/// Holds the time the catalogue was fetched, as seconds since 1970.
+const CATALOGUE_FETCHED_AT: &str = "catalogue_fetched_at";
 
 /// A folder holding the most recently fetched Element Sets.
 #[derive(Clone, Debug)]
@@ -58,6 +64,24 @@ impl Cache {
         self.write_time(FETCHED_AT, fetched_at)
     }
 
+    /// The stored Catalogue Records and when they were fetched, or `None` if there are
+    /// none or they cannot be read.
+    pub fn load_catalogue(&self) -> Option<(CatalogueRecords, SystemTime)> {
+        let fetched_at = self.catalogue_fetched_at()?;
+        let text = fs::read_to_string(self.dir.join(CATALOGUE)).ok()?;
+        Some((parse_catalogue(&text)?, fetched_at))
+    }
+
+    /// Replaces the stored catalogue file.
+    pub fn store_catalogue(&self, text: &str, fetched_at: SystemTime) -> io::Result<()> {
+        self.write(CATALOGUE, text)?;
+        self.write_time(CATALOGUE_FETCHED_AT, fetched_at)
+    }
+
+    pub fn catalogue_fetched_at(&self) -> Option<SystemTime> {
+        self.read_time(CATALOGUE_FETCHED_AT)
+    }
+
     /// When a fetch was last attempted, whether or not it succeeded.
     pub fn last_attempt(&self) -> Option<SystemTime> {
         self.read_time(LAST_ATTEMPT)
@@ -96,7 +120,25 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{files, hours};
+    use crate::test_support::{catalogue, files, hours};
+
+    #[test]
+    fn stored_catalogue_records_load_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::at(dir.path());
+        assert!(cache.load_catalogue().is_none());
+        assert_eq!(cache.catalogue_fetched_at(), None);
+
+        let fetched_at = SystemTime::UNIX_EPOCH + hours(7);
+        cache.store_catalogue(&catalogue(), fetched_at).unwrap();
+        let (records, loaded_at) = cache.load_catalogue().expect("stored Catalogue Records");
+        assert_eq!(records[&25_544].launch_date, "1998-11-20");
+        assert_eq!(loaded_at, fetched_at);
+
+        // A damaged file is ignored, not half-read.
+        fs::write(dir.path().join(CATALOGUE), "garbage").unwrap();
+        assert!(cache.load_catalogue().is_none());
+    }
 
     #[test]
     fn an_empty_cache_has_nothing_to_load() {

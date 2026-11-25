@@ -26,6 +26,10 @@ _Avoid_: Junk, fragment, space trash
 The public list of Tracked Objects, each with a permanent catalogue number. Some entries have no published Element Set, because the object is restricted or has been lost.
 _Avoid_: Database, satellite list, SATCAT
 
+**Catalogue Record**:
+The Catalogue's lasting facts about one Tracked Object: its owner, launch date and launch site.
+_Avoid_: Metadata, SATCAT entry, catalogue entry
+
 **Group**:
 A named set of Tracked Objects that share a purpose or belong to one constellation, such as weather Satellites or Starlink.
 _Avoid_: Category, collection, constellation (as the general word)

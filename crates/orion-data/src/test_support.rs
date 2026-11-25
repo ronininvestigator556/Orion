@@ -30,25 +30,49 @@ pub fn files() -> ElementSetFiles {
     }
 }
 
+/// Two real rows from CelesTrak's satellite catalogue. The first has decayed.
+pub fn catalogue() -> String {
+    "OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE\n\
+     SPUTNIK 1,1957-001B,2,PAY,D,CIS,1957-10-04,TYMSC,1958-01-03,96.10,65.00,1080,64,,,EA,IMP\n\
+     ISS (ZARYA),1998-067A,25544,PAY,+,ISS,1998-11-20,TYMSC,,92.93,51.63,423,413,399.0524,,EA,ORB\n"
+        .to_owned()
+}
+
 /// A Source that answers from memory and counts how often it is asked.
 pub struct StubSource {
     answer: Result<ElementSetFiles, FetchError>,
+    catalogue_answer: Result<String, FetchError>,
     fetches: AtomicUsize,
+    catalogue_fetches: AtomicUsize,
 }
 
 impl StubSource {
     pub fn succeeding(files: ElementSetFiles) -> Self {
         Self {
             answer: Ok(files),
+            catalogue_answer: Ok(catalogue()),
             fetches: AtomicUsize::new(0),
+            catalogue_fetches: AtomicUsize::new(0),
         }
     }
 
     pub fn failing(error: FetchError) -> Self {
         Self {
-            answer: Err(error),
+            answer: Err(error.clone()),
+            catalogue_answer: Err(error),
             fetches: AtomicUsize::new(0),
+            catalogue_fetches: AtomicUsize::new(0),
         }
+    }
+
+    /// Changes what the Source answers when asked for the catalogue file.
+    pub fn with_catalogue(mut self, answer: Result<String, FetchError>) -> Self {
+        self.catalogue_answer = answer;
+        self
+    }
+
+    pub fn catalogue_fetches(&self) -> usize {
+        self.catalogue_fetches.load(Ordering::SeqCst)
     }
 
     pub fn fetches(&self) -> usize {
@@ -65,12 +89,18 @@ impl Source for StubSource {
         self.fetches.fetch_add(1, Ordering::SeqCst);
         self.answer.clone()
     }
+
+    fn fetch_catalogue(&self) -> Result<String, FetchError> {
+        self.catalogue_fetches.fetch_add(1, Ordering::SeqCst);
+        self.catalogue_answer.clone()
+    }
 }
 
 /// A minimal HTTP server on this machine that answers every request with whatever
 /// `respond` returns for it, and remembers the requests it received.
 pub struct FakeServer {
     endpoint: String,
+    catalogue_endpoint: String,
     requests: Arc<Mutex<Vec<String>>>,
 }
 
@@ -78,7 +108,9 @@ impl FakeServer {
     /// `respond` receives the request line and headers and returns a status and body.
     pub fn start(respond: impl Fn(&str) -> (u16, String) + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a free local port");
-        let endpoint = format!("http://{}/gp.php", listener.local_addr().unwrap());
+        let address = listener.local_addr().unwrap();
+        let endpoint = format!("http://{address}/gp.php");
+        let catalogue_endpoint = format!("http://{address}/pub/satcat.csv");
         let requests = Arc::new(Mutex::new(Vec::new()));
 
         let recorded = Arc::clone(&requests);
@@ -107,7 +139,15 @@ impl FakeServer {
             }
         });
 
-        Self { endpoint, requests }
+        Self {
+            endpoint,
+            catalogue_endpoint,
+            requests,
+        }
+    }
+
+    pub fn catalogue_endpoint(&self) -> &str {
+        &self.catalogue_endpoint
     }
 
     pub fn endpoint(&self) -> &str {

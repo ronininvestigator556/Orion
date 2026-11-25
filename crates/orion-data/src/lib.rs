@@ -13,7 +13,10 @@ use std::fmt;
 use std::io;
 use std::time::{Duration, SystemTime};
 
-use orion_core::catalogue::{ObjectKind, TrackedObject, parse_element_set_files};
+use orion_core::catalogue::{
+    CatalogueRecords, ObjectKind, TrackedObject, parse_catalogue_records_csv,
+    parse_element_set_files,
+};
 
 pub use cache::Cache;
 pub use source::{CelesTrak, FetchError, Source};
@@ -26,6 +29,13 @@ pub const STALE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 /// CelesTrak updates its data every two hours and blocks addresses that ask more often
 /// or that keep asking after an error, so this is deliberately strict.
 pub const ATTEMPT_LOCK: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Catalogue Records older than this are fetched again alongside the Element Sets.
+///
+/// Owners, launch dates and launch sites never change for an object already listed, so
+/// the only cost of an old copy is that the newest launches show no record for a while.
+/// The file is several megabytes, so it is fetched far less often than Element Sets.
+pub const CATALOGUE_STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Raw Element Set files, one per kind of Tracked Object, as a Source provides them.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +64,8 @@ pub struct Loaded {
     pub rejected: usize,
     /// When the Element Sets were fetched from their Source.
     pub fetched_at: SystemTime,
+    /// Catalogue Records, when they were fetched along with the Element Sets.
+    pub catalogue: Option<CatalogueRecords>,
 }
 
 /// First column of every CSV Element Set file.
@@ -63,6 +75,22 @@ const CSV_HEADER_START: &str = "OBJECT_NAME,";
 /// text would pass as a file with a strange header and no rows.
 fn has_element_set_header(text: &str) -> bool {
     text.starts_with(CSV_HEADER_START)
+}
+
+/// True if the text begins like CelesTrak's satellite catalogue in CSV form.
+fn has_catalogue_header(text: &str) -> bool {
+    let header = text.lines().next().unwrap_or_default();
+    header.contains("NORAD_CAT_ID") && header.contains("LAUNCH_SITE")
+}
+
+/// Reads Catalogue Records, or `None` if the text is not a usable catalogue file.
+fn parse_catalogue(text: &str) -> Option<CatalogueRecords> {
+    if !has_catalogue_header(text) {
+        return None;
+    }
+    parse_catalogue_records_csv(text)
+        .ok()
+        .filter(|records| !records.is_empty())
 }
 
 impl Loaded {
@@ -79,6 +107,7 @@ impl Loaded {
             objects: parsed.objects,
             rejected: parsed.rejected,
             fetched_at,
+            catalogue: None,
         })
     }
 }
@@ -135,20 +164,113 @@ pub fn refresh(
         .map_err(RefreshError::CacheUnwritable)?;
 
     let files = source.fetch().map_err(RefreshError::Fetch)?;
-    let loaded =
+    let mut loaded =
         Loaded::parse(&files, now).ok_or(RefreshError::Fetch(FetchError::NotElementSets))?;
 
     if let Err(error) = cache.store(&files, now) {
         // The fresh Element Sets are still usable for this run.
         log::warn!("could not store the fetched Element Sets: {error}");
     }
+
+    let catalogue_is_due = cache
+        .catalogue_fetched_at()
+        .is_none_or(|fetched_at| is_older_than(fetched_at, now, CATALOGUE_STALE_AFTER));
+    if catalogue_is_due {
+        loaded.catalogue = refresh_catalogue(source, cache, now);
+    }
     Ok(loaded)
+}
+
+/// Fetches and stores Catalogue Records. A failure here is not a failed refresh: the
+/// Element Sets are what matter, and the records on hand stay in use.
+fn refresh_catalogue(
+    source: &dyn Source,
+    cache: &Cache,
+    now: SystemTime,
+) -> Option<CatalogueRecords> {
+    let text = match source.fetch_catalogue() {
+        Ok(text) => text,
+        Err(error) => {
+            log::warn!("could not fetch Catalogue Records: {error}");
+            return None;
+        }
+    };
+    let Some(records) = parse_catalogue(&text) else {
+        log::warn!("the source did not return Catalogue Records");
+        return None;
+    };
+    if let Err(error) = cache.store_catalogue(&text, now) {
+        log::warn!("could not store the fetched Catalogue Records: {error}");
+    }
+    Some(records)
+}
+
+fn is_older_than(obtained_at: SystemTime, now: SystemTime, limit: Duration) -> bool {
+    // A time in the future means the clock was changed; treat the data as fresh.
+    now.duration_since(obtained_at).is_ok_and(|age| age > limit)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{StubSource, files, hours};
+    use crate::test_support::{StubSource, catalogue, files, hours};
+
+    #[test]
+    fn catalogue_records_come_with_the_first_refresh_and_then_weekly() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::at(dir.path());
+        let source = StubSource::succeeding(files());
+        let start = SystemTime::UNIX_EPOCH + hours(100);
+
+        let first = refresh(&source, &cache, start).unwrap();
+        assert_eq!(first.catalogue.expect("Catalogue Records").len(), 1);
+        let (stored, stored_at) = cache.load_catalogue().expect("stored Catalogue Records");
+        assert_eq!(stored[&25_544].owner, "ISS");
+        assert_eq!(stored_at, start);
+
+        // A day later the Element Sets are refreshed but the records are left alone.
+        let next_day = refresh(&source, &cache, start + hours(24)).unwrap();
+        assert!(next_day.catalogue.is_none());
+        assert_eq!(source.catalogue_fetches(), 1);
+
+        // After more than a week they are fetched again.
+        let next_week = refresh(&source, &cache, start + hours(8 * 24)).unwrap();
+        assert!(next_week.catalogue.is_some());
+        assert_eq!(source.catalogue_fetches(), 2);
+    }
+
+    #[test]
+    fn failing_to_get_catalogue_records_does_not_fail_the_refresh() {
+        for answer in [
+            Err(FetchError::Refused(403)),
+            Ok("this is not a catalogue file".to_owned()),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = Cache::at(dir.path());
+            let source = StubSource::succeeding(files()).with_catalogue(answer);
+
+            let loaded = refresh(&source, &cache, SystemTime::UNIX_EPOCH + hours(100))
+                .expect("the Element Sets still arrive");
+            assert_eq!(loaded.objects.len(), 3);
+            assert!(loaded.catalogue.is_none());
+            assert!(cache.load_catalogue().is_none());
+        }
+    }
+
+    #[test]
+    fn no_catalogue_records_are_asked_for_after_element_sets_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = StubSource::failing(FetchError::Refused(403));
+        let _ = refresh(
+            &source,
+            &Cache::at(dir.path()),
+            SystemTime::UNIX_EPOCH + hours(100),
+        );
+        assert_eq!(source.catalogue_fetches(), 0);
+
+        // `catalogue()` is a usable file, so the stub's default answer is realistic.
+        assert!(parse_catalogue(&catalogue()).is_some());
+    }
 
     #[test]
     fn element_sets_go_stale_after_six_hours() {

@@ -6,7 +6,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context as _;
-use orion_core::catalogue::{ObjectKind, TrackedObject, parse_element_set_files};
+use orion_core::catalogue::{
+    CatalogueRecords, ObjectKind, TrackedObject, parse_catalogue_records_csv,
+    parse_element_set_files,
+};
 use orion_data::{Cache, Loaded, RefreshError, Source, attempt_allowed_at, is_stale};
 
 /// The Snapshot: Element Sets shipped inside the app, most trusted kind first.
@@ -24,6 +27,23 @@ const SNAPSHOT: [(ObjectKind, &str); 3] = [
         include_str!("../assets/snapshot/debris.csv"),
     ),
 ];
+
+/// Catalogue Records for every object in orbit when the Snapshot was taken: CelesTrak's
+/// satellite catalogue, trimmed to the catalogue number, owner, launch date and launch
+/// site columns, without the objects that have decayed.
+const SNAPSHOT_CATALOGUE: &str = include_str!("../assets/snapshot/catalogue.csv");
+
+/// Reads the Catalogue Records in the Snapshot.
+pub fn load_snapshot_catalogue() -> anyhow::Result<CatalogueRecords> {
+    parse_catalogue_records_csv(SNAPSHOT_CATALOGUE).context("reading the bundled Catalogue Records")
+}
+
+/// What a completed refresh delivers.
+pub struct Refreshed {
+    pub objects: Vec<TrackedObject>,
+    /// Present only when Catalogue Records were fetched as well.
+    pub records: Option<CatalogueRecords>,
+}
 
 /// When the Snapshot was fetched from CelesTrak: 25 November 2026, 05:16:24 UTC,
 /// in seconds since 1970.
@@ -86,13 +106,14 @@ pub struct Feed {
 }
 
 impl Feed {
-    /// Chooses the freshest Element Sets available without the network and returns
-    /// their Tracked Objects, then starts a refresh in the background if they are stale.
+    /// Chooses the freshest Element Sets and Catalogue Records available without the
+    /// network and returns them, then starts a refresh in the background if the Element
+    /// Sets are stale.
     pub fn start(
         source: Arc<dyn Source>,
         cache: Option<Cache>,
         now: SystemTime,
-    ) -> anyhow::Result<(Self, Vec<TrackedObject>)> {
+    ) -> anyhow::Result<(Self, Vec<TrackedObject>, CatalogueRecords)> {
         // A new version of the app can ship a Snapshot newer than an old cache.
         let cached = cache
             .as_ref()
@@ -111,6 +132,15 @@ impl Feed {
             }
         );
 
+        let records = match cache
+            .as_ref()
+            .and_then(Cache::load_catalogue)
+            .filter(|(_, fetched_at)| *fetched_at > snapshot_fetched_at())
+        {
+            Some((records, _)) => records,
+            None => load_snapshot_catalogue()?,
+        };
+
         let mut feed = Self {
             last_attempt: cache.as_ref().and_then(Cache::last_attempt),
             source,
@@ -123,7 +153,7 @@ impl Feed {
         if is_stale(fetched_at, now) {
             feed.request_refresh(now);
         }
-        Ok((feed, objects))
+        Ok((feed, objects, records))
     }
 
     /// Starts fetching fresh Element Sets in the background, if that is allowed right now.
@@ -145,8 +175,8 @@ impl Feed {
         log::info!("fetching Element Sets from {}", self.source.name());
     }
 
-    /// Returns freshly fetched Tracked Objects once, when a refresh completes.
-    pub fn poll(&mut self) -> Option<Vec<TrackedObject>> {
+    /// Returns what a refresh fetched, once, when it completes.
+    pub fn poll(&mut self) -> Option<Refreshed> {
         let outcome = match self.in_flight.as_ref()?.try_recv() {
             Ok(outcome) => outcome,
             Err(TryRecvError::Empty) => return None,
@@ -165,7 +195,10 @@ impl Feed {
                 );
                 self.origin = Origin::Fetched;
                 self.fetched_at = loaded.fetched_at;
-                Some(loaded.objects)
+                Some(Refreshed {
+                    objects: loaded.objects,
+                    records: loaded.catalogue,
+                })
             }
             Err(error) => {
                 log::warn!("refreshing Element Sets failed: {error}");
@@ -247,13 +280,21 @@ mod tests {
                 debris: debris.to_owned(),
             })
         }
+
+        fn fetch_catalogue(&self) -> Result<String, FetchError> {
+            // One record, so a test can tell fetched records from the Snapshot's.
+            Ok(
+                "NORAD_CAT_ID,OWNER,LAUNCH_DATE,LAUNCH_SITE\n25544,TEST,2000-01-01,TEST\n"
+                    .to_owned(),
+            )
+        }
     }
 
     /// Polls until the refresh in flight finishes, returning any Tracked Objects it delivered.
-    fn wait_for_refresh(feed: &mut Feed, now: SystemTime) -> Option<Vec<TrackedObject>> {
+    fn wait_for_refresh(feed: &mut Feed, now: SystemTime) -> Option<Refreshed> {
         for _ in 0..1_000 {
-            if let Some(objects) = feed.poll() {
-                return Some(objects);
+            if let Some(refreshed) = feed.poll() {
+                return Some(refreshed);
             }
             if feed.status(now).refresh != Refresh::InProgress {
                 return None;
@@ -269,10 +310,18 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(1);
 
-        let (feed, objects) =
+        let (feed, objects, records) =
             Feed::start(source.clone(), Some(Cache::at(dir.path())), now).unwrap();
 
         assert!(objects.len() > 29_000);
+        // Every Tracked Object in the Snapshot has a Catalogue Record.
+        assert!(records.len() > 35_000);
+        assert!(
+            objects
+                .iter()
+                .all(|object| records.contains_key(&object.catalogue_number))
+        );
+        assert_eq!(records[&25_544].owner, "ISS");
         let status = feed.status(now);
         assert_eq!(status.origin, Origin::Snapshot);
         assert_eq!(status.age, hours(1));
@@ -287,11 +336,16 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, _) = Feed::start(source.clone(), Some(cache.clone()), now).unwrap();
+        let (mut feed, _, _) = Feed::start(source.clone(), Some(cache.clone()), now).unwrap();
         assert_eq!(feed.status(now).refresh, Refresh::InProgress);
 
-        let objects = wait_for_refresh(&mut feed, now).expect("fetched Tracked Objects");
-        assert!(objects.len() > 29_000);
+        let refreshed = wait_for_refresh(&mut feed, now).expect("fetched Tracked Objects");
+        assert!(refreshed.objects.len() > 29_000);
+        // With no catalogue in the cache, the refresh fetched that too.
+        assert_eq!(
+            refreshed.records.expect("Catalogue Records")[&25_544].owner,
+            "TEST"
+        );
 
         let later = now + hours(1);
         let status = feed.status(later);
@@ -311,7 +365,7 @@ mod tests {
         let source = StubSource::new(true);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, objects) =
+        let (mut feed, objects, _) =
             Feed::start(source.clone(), Some(Cache::at(dir.path())), now).unwrap();
         assert!(wait_for_refresh(&mut feed, now).is_none());
 
@@ -334,7 +388,9 @@ mod tests {
 
         let source = StubSource::new(false);
         let now = fetched_at + hours(3);
-        let (feed, _) = Feed::start(source.clone(), Some(cache), now).unwrap();
+        let (feed, _, records) = Feed::start(source.clone(), Some(cache), now).unwrap();
+        // The cached Catalogue Records are newer than the Snapshot's, so they are used.
+        assert_eq!(records[&25_544].owner, "TEST");
 
         let status = feed.status(now);
         assert_eq!(status.origin, Origin::Fetched);
@@ -347,7 +403,7 @@ mod tests {
         let source = StubSource::new(false);
         let now = snapshot_fetched_at() + hours(7);
 
-        let (mut feed, _) = Feed::start(source.clone(), None, now).unwrap();
+        let (mut feed, _, _) = Feed::start(source.clone(), None, now).unwrap();
         assert_eq!(feed.status(now).refresh, Refresh::Unavailable);
         feed.request_refresh(now);
         assert_eq!(source.fetches(), 0);

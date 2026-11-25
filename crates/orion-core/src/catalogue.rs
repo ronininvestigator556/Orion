@@ -182,14 +182,17 @@ pub struct ParsedElementSets {
 
 #[derive(Debug)]
 pub enum CatalogueError {
-    /// The text is not a valid Element Set file.
+    /// The text is not a valid CSV file of the expected kind.
     Malformed(csv::Error),
+    /// The file has no column with this name.
+    MissingColumn(&'static str),
 }
 
 impl fmt::Display for CatalogueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Malformed(error) => write!(f, "malformed Element Set file: {error}"),
+            Self::Malformed(error) => write!(f, "malformed file: {error}"),
+            Self::MissingColumn(name) => write!(f, "the file has no {name} column"),
         }
     }
 }
@@ -198,6 +201,7 @@ impl std::error::Error for CatalogueError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Malformed(error) => Some(error),
+            Self::MissingColumn(_) => None,
         }
     }
 }
@@ -258,9 +262,107 @@ pub fn parse_element_set_files(
     Ok(combined)
 }
 
+/// The Catalogue's lasting facts about one Tracked Object, as the codes it uses.
+/// See [`crate::codes`] for what the codes stand for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogueRecord {
+    /// Code for the owning country or organisation, such as `US`.
+    pub owner: String,
+    /// Launch date as `YYYY-MM-DD`.
+    pub launch_date: String,
+    /// Code for the launch site, such as `AFETR`.
+    pub launch_site: String,
+}
+
+/// Catalogue Records by catalogue number.
+pub type CatalogueRecords = std::collections::HashMap<u32, CatalogueRecord>;
+
+/// Reads Catalogue Records from CelesTrak's satellite catalogue in CSV form.
+///
+/// Columns are found by name, so the full file and a copy trimmed to the needed columns
+/// both work. Objects that have decayed are left out, since they are never on show.
+pub fn parse_catalogue_records_csv(text: &str) -> Result<CatalogueRecords, CatalogueError> {
+    let mut reader = csv::Reader::from_reader(text.as_bytes());
+    let headers = reader.headers().map_err(CatalogueError::Malformed)?.clone();
+    let column = |name: &'static str| {
+        headers
+            .iter()
+            .position(|header| header == name)
+            .ok_or(CatalogueError::MissingColumn(name))
+    };
+    let number = column("NORAD_CAT_ID")?;
+    let owner = column("OWNER")?;
+    let launch_date = column("LAUNCH_DATE")?;
+    let launch_site = column("LAUNCH_SITE")?;
+    let decay_date = column("DECAY_DATE").ok();
+
+    let mut records = CatalogueRecords::new();
+    for row in reader.records() {
+        let row = row.map_err(CatalogueError::Malformed)?;
+        let field = |index: usize| row.get(index).unwrap_or_default();
+        if decay_date.is_some_and(|index| !field(index).is_empty()) {
+            continue;
+        }
+        let Ok(catalogue_number) = field(number).parse() else {
+            continue;
+        };
+        records.insert(
+            catalogue_number,
+            CatalogueRecord {
+                owner: field(owner).to_owned(),
+                launch_date: field(launch_date).to_owned(),
+                launch_site: field(launch_site).to_owned(),
+            },
+        );
+    }
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Real rows from CelesTrak's satellite catalogue. Sputnik 1 has decayed.
+    const CATALOGUE: &str = "\
+OBJECT_NAME,OBJECT_ID,NORAD_CAT_ID,OBJECT_TYPE,OPS_STATUS_CODE,OWNER,LAUNCH_DATE,LAUNCH_SITE,DECAY_DATE,PERIOD,INCLINATION,APOGEE,PERIGEE,RCS,DATA_STATUS_CODE,ORBIT_CENTER,ORBIT_TYPE
+SPUTNIK 1,1957-001B,2,PAY,D,CIS,1957-10-04,TYMSC,1958-01-03,96.10,65.00,1080,64,,,EA,IMP
+ISS (ZARYA),1998-067A,25544,PAY,+,ISS,1998-11-20,TYMSC,,92.93,51.63,423,413,399.0524,,EA,ORB
+";
+
+    #[test]
+    fn catalogue_records_are_read_for_objects_still_in_orbit() {
+        let records = parse_catalogue_records_csv(CATALOGUE).expect("a valid file");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[&25_544],
+            CatalogueRecord {
+                owner: "ISS".to_owned(),
+                launch_date: "1998-11-20".to_owned(),
+                launch_site: "TYMSC".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_trimmed_catalogue_file_reads_the_same() {
+        let trimmed = "NORAD_CAT_ID,OWNER,LAUNCH_DATE,LAUNCH_SITE\n25544,ISS,1998-11-20,TYMSC\n";
+        assert_eq!(
+            parse_catalogue_records_csv(trimmed).unwrap(),
+            parse_catalogue_records_csv(CATALOGUE).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_file_without_the_needed_columns_is_an_error() {
+        let result = parse_catalogue_records_csv("NORAD_CAT_ID,OWNER\n25544,ISS\n");
+        assert!(
+            matches!(result, Err(CatalogueError::MissingColumn("LAUNCH_DATE"))),
+            "{result:?}"
+        );
+        // An Element Set file is not a catalogue file.
+        let element_sets = format!("{HEADER}\n{CALSPHERE}\n");
+        assert!(parse_catalogue_records_csv(&element_sets).is_err());
+    }
 
     const HEADER: &str = "OBJECT_NAME,OBJECT_ID,EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,ARG_OF_PERICENTER,MEAN_ANOMALY,EPHEMERIS_TYPE,CLASSIFICATION_TYPE,NORAD_CAT_ID,ELEMENT_SET_NO,REV_AT_EPOCH,BSTAR,MEAN_MOTION_DOT,MEAN_MOTION_DDOT";
     // Real rows from CelesTrak, 24 November 2026. The second has a six-digit catalogue number.

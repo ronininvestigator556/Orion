@@ -151,9 +151,10 @@ impl Running {
         if cache.is_none() {
             log::warn!("no cache folder is available; Element Sets will not be fetched");
         }
-        let (feed, objects) = Feed::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
+        let (feed, objects, records) =
+            Feed::start(Arc::new(CelesTrak::new()), cache, SystemTime::now())?;
 
-        let tracked = Tracked::new(objects);
+        let tracked = Tracked::new(objects, records);
         let selected = options.select.and_then(|catalogue_number| {
             let index = tracked.index_of(catalogue_number);
             if index.is_none() {
@@ -195,8 +196,8 @@ impl Running {
         // Everything in the scene is shown for the Simulation Clock's moment, `now`.
         let real_now = julian_date_now();
         let now = self.clock.advance(real_now, elapsed_ms as f64 / 1000.0);
-        if let Some(objects) = self.feed.poll() {
-            self.tracked.replace(objects);
+        if let Some(refreshed) = self.feed.poll() {
+            self.tracked.replace(refreshed.objects, refreshed.records);
             // Indexes belong to the old set; find the selected object again by number.
             self.hovered = None;
             self.selected = self.selected.and_then(|selection| {
