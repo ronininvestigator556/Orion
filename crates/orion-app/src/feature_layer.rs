@@ -897,7 +897,10 @@ mod tests {
     }
 
     fn look_from(layer: &mut FeatureLayer, degrees_per_point: f64, highlight: Highlight) {
-        layer.set_view(&LayerView { degrees_per_point });
+        layer.set_view(&LayerView {
+            degrees_per_point,
+            ..LayerView::default()
+        });
         layer.rebuild_dots(start(), highlight);
     }
 

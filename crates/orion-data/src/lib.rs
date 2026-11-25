@@ -11,6 +11,7 @@ mod source;
 #[cfg(test)]
 mod test_support;
 pub mod tiles;
+pub mod traffic;
 pub mod weather;
 
 use std::fmt;

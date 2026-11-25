@@ -8,6 +8,7 @@ mod camera;
 mod energy_layers;
 mod feature_layer;
 mod feed;
+mod flight_layer;
 mod globe;
 mod layer;
 mod lines;
@@ -362,6 +363,9 @@ impl Session {
                 layer_cache.clone(),
             )));
         }
+        layers.add(Box::new(flight_layer::FlightLayer::new(Arc::clone(
+            &fetcher,
+        ))));
         for wanted in &options.layers {
             let found = (0..layers.len()).find(|index| {
                 layers
@@ -442,20 +446,27 @@ impl Session {
         let previous_sidereal_angle = self.sidereal_angle;
         self.sidereal_angle = now.greenwich_sidereal_angle() as f32;
         if self.layers.orbit.poll() {
-            // Indexes belong to the old set; find the selected Feature again by its key.
+            // Indexes belong to the old set.
             self.hovered = None;
-            self.selected = self.selected.and_then(|selection| {
-                let layer = self.layers.get(selection.feature.layer)?;
-                let index = layer.index_of(selection.key)?;
-                Some(Selection {
-                    feature: FeatureRef {
-                        index,
-                        ..selection.feature
-                    },
-                    ..selection
-                })
-            });
         }
+        // Any Layer may have taken in fresh data since the last frame, which moves its
+        // Features about. Find the selected one again by its key; if it is no longer
+        // listed, nothing is selected.
+        self.selected = self.selected.and_then(|selection| {
+            let layer = self.layers.get(selection.feature.layer)?;
+            if layer.stable_key(selection.feature.index) == Some(selection.key) {
+                return Some(selection);
+            }
+            self.hovered = None;
+            let index = layer.index_of(selection.key)?;
+            Some(Selection {
+                feature: FeatureRef {
+                    index,
+                    ..selection.feature
+                },
+                ..selection
+            })
+        });
 
         // Hovering uses the dots from the previous frame, a few milliseconds old.
         // The dots are where they were at the previous frame's moment, so they are picked
@@ -477,18 +488,17 @@ impl Session {
 
         let selected = self.selected.map(|selection| selection.feature);
         // How much of the globe a point of the screen spans decides which Layers gather
-        // into Clusters.
-        let altitude = self
-            .rig
-            .scene_camera(self.sidereal_angle)
-            .position()
-            .length()
-            - 1.0;
+        // into Clusters, and the place below the camera what a Layer of traffic fetches.
+        let below = self.rig.scene_camera(self.sidereal_angle).position();
+        let altitude = below.length() - 1.0;
         let radians_per_pixel = altitude.max(0.0) * 2.0 * (camera::FOV_Y / 2.0).tan()
             / self.renderer.size().height.max(1) as f32;
         let radians_per_point = radians_per_pixel * self.renderer.scale_factor() as f32;
+        let latitude = (below.z / below.length()).clamp(-1.0, 1.0).asin();
         self.layers.set_view(&LayerView {
             degrees_per_point: f64::from(radians_per_point.to_degrees()),
+            latitude_deg: f64::from(latitude.to_degrees()),
+            longitude_deg: f64::from(below.y.atan2(below.x).to_degrees()),
         });
         self.layers.update(now, real_now, selected, self.hovered);
 

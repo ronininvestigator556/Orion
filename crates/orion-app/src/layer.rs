@@ -33,12 +33,16 @@ pub struct Toggle {
     pub on: bool,
 }
 
-/// What a Layer may need to know about the view to decide how to draw itself.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What a Layer may need to know about the view to decide what to fetch and how to
+/// draw itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LayerView {
     /// How much of the globe, in degrees, one logical point of the screen spans
     /// straight below the camera.
     pub degrees_per_point: f64,
+    /// The place straight below the camera, north and east positive.
+    pub latitude_deg: f64,
+    pub longitude_deg: f64,
 }
 
 /// A Cluster: one mark standing for many nearby Features of one Layer.
