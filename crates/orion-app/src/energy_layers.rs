@@ -124,12 +124,12 @@ pub static DAMS: Spec = Spec {
     name: "Dams",
     theme: Theme::Energy,
     listing: places::DAMS,
-    classes: &[Class::new("Named dams", [100, 181, 246])],
+    classes: &[Class::new("Dams", [100, 181, 246])],
     coverage: TimeCoverage::AnyMoment,
     show: Show::Always,
     dot_scale: |_| 1.3,
-    note: "As mapped by OpenStreetMap's volunteers. Only dams with a name, whether or \
-           not they make power.",
+    note: "As mapped by OpenStreetMap's volunteers. Named dams whose height is recorded \
+           or that are otherwise of note, whether or not they make power.",
     attribution: OPENSTREETMAP,
     cluster: true,
     routes: false,

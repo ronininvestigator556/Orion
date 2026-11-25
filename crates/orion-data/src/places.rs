@@ -199,7 +199,7 @@ pub const OIL_AND_GAS_SITES: Listing = extract(
     "oil_and_gas_sites.tsv",
 );
 
-/// Named dams, as mapped in OpenStreetMap.
+/// Named dams of some note, as mapped in OpenStreetMap.
 pub const DAMS: Listing = extract(extract_url!("dams.tsv"), "dams.tsv");
 
 /// Oil, gas and fuel pipelines, as mapped in OpenStreetMap. Each is a route.

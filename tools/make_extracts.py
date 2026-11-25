@@ -176,7 +176,8 @@ def mine(tags):
 
 def oil_and_gas_site(tags):
     refinery = tags.get("industrial") == "refinery"
-    label = "Refinery" if refinery else "Oil or gas site"
+    terminal = tags.get("industrial") in ("oil_terminal", "lng_terminal")
+    label = "Refinery" if refinery else "Terminal" if terminal else "Oil or gas site"
     name = first(tags, "name", "name:en") or label
     return 0 if refinery else 1, name, [
         ("Kind", label),
@@ -255,12 +256,17 @@ EXTRACTS = {
         'nwr["industrial"="mine"];',
         mine,
     ),
+    # Every refinery and terminal, and other oil and gas sites only where they have a
+    # name: unnamed ones are well pads by the hundred thousand.
     "oil_and_gas_sites": (
-        'nwr["industrial"~"^(refinery|oil|gas|oil_terminal|lng_terminal)$"];',
+        'nwr["industrial"~"^(refinery|oil_terminal|lng_terminal)$"];'
+        'nwr["industrial"~"^(oil|gas)$"]["name"];',
         oil_and_gas_site,
     ),
+    # Named dams of some note: ones whose height is recorded or that have an entry in
+    # Wikidata. Every named dam would be eighty thousand, most of them farm ponds.
     "dams": (
-        'nwr["waterway"="dam"]["name"];',
+        'nwr["waterway"="dam"]["name"]["height"];nwr["waterway"="dam"]["name"]["wikidata"];',
         dam,
     ),
     "pipelines": (
