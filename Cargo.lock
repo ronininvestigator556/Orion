@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "orion-app"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "orion-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "csv",
  "serde_json",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "orion-data"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "csv",
  "directories",
