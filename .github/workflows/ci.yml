@@ -61,8 +61,11 @@ jobs:
       - name: Install Linux window-system headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes pkg-config libwayland-dev libxkbcommon-dev
+      # Orion is built two ways: as it is released, and with the Layers still on trial.
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # No test opens a window or contacts CelesTrak, so these run on a headless machine.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked

@@ -33,6 +33,11 @@ winit.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+[features]
+# Layers still being judged. They are left out of an ordinary build, and so out of
+# every release; `cargo run -p orion-app --features trials` puts them in.
+trials = []
+
 # Only a Windows build embeds an icon in the executable; see build.rs.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -27,6 +27,7 @@ mod streetmap;
 mod tracked;
 mod traffic_layer;
 mod ui;
+#[cfg(feature = "trials")]
 mod unrest_layers;
 
 use std::sync::Arc;
@@ -113,8 +114,6 @@ struct Options {
     select_found: bool,
     /// Start in Star-Fixed View.
     star_fixed: bool,
-    /// List the Layers that are still on trial.
-    experimental: bool,
     /// Start in Follow Mode, which needs `--select` to have something to follow.
     follow: bool,
     /// Start looking down on this place.
@@ -175,7 +174,7 @@ const STREET_ADDRESS: &str = "street map.address";
 const USAGE: &str = "usage: orion [--select <catalogue number>] [--ground-track] [--follow] \
      [--star-fixed] [--find <name or number> [--select-found]] [--at <latitude>,<longitude>[,<km above>]] \
      [--layers <name>[,<name>...]] [--import <GeoJSON, KML or CSV file>] \
-     [--settings <file to keep settings in>] [--experimental] \
+     [--settings <file to keep settings in>] \
      [--snapshot <picture file> [--wait <seconds>] [--size <width>x<height>]]";
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<Options> {
@@ -194,7 +193,6 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> anyhow::Result<
             "--ground-track" => options.ground_track = true,
             "--select-found" => options.select_found = true,
             "--star-fixed" => options.star_fixed = true,
-            "--experimental" => options.experimental = true,
             "--follow" => options.follow = true,
             "--at" => {
                 let place = arguments
@@ -456,14 +454,13 @@ impl Session {
                 layer_cache.clone(),
             )));
         }
-        // Layers on trial are listed only when asked for.
-        if options.experimental {
-            layers.add(Box::new(feature_layer::FeatureLayer::new(
-                &unrest_layers::UNREST_REPORTS,
-                Arc::clone(&fetcher),
-                layer_cache.clone(),
-            )));
-        }
+        // Layers on trial are only in a build made with them: see Cargo.toml.
+        #[cfg(feature = "trials")]
+        layers.add(Box::new(feature_layer::FeatureLayer::new(
+            &unrest_layers::UNREST_REPORTS,
+            Arc::clone(&fetcher),
+            layer_cache.clone(),
+        )));
         for spec in [&traffic_layer::FLIGHTS, &traffic_layer::SHIPS] {
             layers.add(Box::new(traffic_layer::TrafficLayer::new(
                 spec,
@@ -1271,8 +1268,8 @@ mod tests {
         );
         let views = parse(&["--star-fixed", "--follow"]).unwrap();
         assert!(views.star_fixed && views.follow);
-        assert!(!views.experimental);
-        assert!(parse(&["--experimental"]).unwrap().experimental);
+        // Layers on trial are a matter of how Orion was built, not of how it is started.
+        assert!(parse(&["--experimental"]).is_err());
         assert_eq!(
             parse(&["--find", "noaa 2"]).unwrap().find.as_deref(),
             Some("noaa 2")

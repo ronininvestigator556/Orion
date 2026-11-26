@@ -2,8 +2,8 @@
 //! the news reported them.
 //!
 //! It is a trial. The reports are sifted by machine from an index of the news that
-//! is itself built by machine, and are often wrong, so the Layer is only listed when
-//! Orion is started with `--experimental`.
+//! is itself built by machine, and are often wrong, so the Layer is only in a build
+//! made with the `trials` feature, and in no release.
 
 use orion_core::layer::{Theme, TimeCoverage};
 use orion_data::unrest;

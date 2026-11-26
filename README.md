@@ -98,10 +98,10 @@ It also carries the file of U.S. work zones, which the Road Works workflow gathe
 
 ## On trial
 
-Starting Orion with `--experimental` lists Layers that are still being judged and are not part of a release:
+Layers that are still being judged are left out of an ordinary build, and so out of every release. Building Orion with the `trials` feature puts them in:
 
 ```bash
-cargo run -- --experimental
+cargo run -p orion-app --features trials
 ```
 
 - **Protests and unrest**, under the Unrest Theme. Unrest Reports are protests, protests with violence and strikes as the news reported them, by town, for the past three days. The Unrest Reports workflow sifts them every hour from the GDELT Project's index of the world's news by running `tools/make_unrest.py`, and publishes one small file beside the Extracts. GDELT reads the news by machine and is often wrong, so the job keeps only what an article's own address says is about a protest, and Orion shows by default only what at least two news outlets carried. A report never says where a crowd is now, or what is planned.
